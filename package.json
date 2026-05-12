@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "dev": "bun src/cli.tsx",
-    "build": "bun build src/cli.tsx --target=node --outfile=dist/cli.js --banner='#!/usr/bin/env node' && chmod +x dist/cli.js",
+    "build": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "seed": "bun scripts/seed-mock-jobs.ts"
@@ -26,6 +26,7 @@
     "zustand": "^5.0.0"
   },
   "devDependencies": {
+    "@types/bun": "^1.3.13",
     "@types/node": "^25.7.0",
     "@types/react": "^18.3.0",
     "ink-testing-library": "^4.0.0",
