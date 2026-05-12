@@ -39,10 +39,12 @@ Adopt collaborate because:
 ### What collaboration looks like, concretely
 
 - Extract the plugin-manifest schema into a versioned standalone doc:
-  [`docs/manifest-spec.md`](./manifest-spec.md). This is the artifact.
+  [`docs/manifest-spec.md`](./manifest-spec.md). This is the artifact. ✓ done.
 - Open an issue on `graykode/abtop` proposing the spec as a shared adapter
-  format. Include: rationale, schema, reference impl (beto), an offer to
-  contribute a Rust crate that consumes manifests if they accept.
+  format. **HELD for v0.8.0 launch (2026-05-12)** — interop outreach
+  happens *after* beto has shipped a verified MVP, so the proposal lands
+  with a credible reference implementation (working on npm + GitHub
+  Releases) rather than vapourware. Revisit within 14 days post-launch.
 - If they engage: co-design the spec from v1.0 to v1.1 with their input;
   publish to a neutral home (`agent-manifest-spec` org or similar) at v1.0.
 - If they reject/ignore: ship the spec under beto's repo, position the
