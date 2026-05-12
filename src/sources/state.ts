@@ -18,7 +18,8 @@
 import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
-import type { SessionSnapshot, SessionState } from '../lib/types.js'
+import type { HarnessId, SessionSnapshot, SessionState } from '../lib/types.js'
+import type { Adapter } from './adapter.js'
 
 // Working session with state.json mtime older than this is treated as dead
 // regardless of what the JSON says. The supervisor reaps idle processes
@@ -40,7 +41,10 @@ export interface StateReaderOptions {
   pollMs?: number
 }
 
-export class StateReader {
+export class ClaudeAdapter implements Adapter {
+  readonly id: HarnessId = 'claude'
+  readonly displayName = 'Claude Code'
+
   private readonly jobsDir: string
   private readonly now: () => number
   private readonly pollMs: number
@@ -190,6 +194,7 @@ export function parseState(
   const fallbackName = sessionId.length > 8 ? sessionId.slice(0, 8) : sessionId
 
   return {
+    harness: 'claude',
     sessionId,
     name: pickStr(obj, ['name', 'title']) || fallbackName,
     state,
@@ -273,6 +278,7 @@ function shallowEqualRows(a: SessionSnapshot[], b: SessionSnapshot[]): boolean {
     const x = a[i]!
     const y = b[i]!
     if (
+      x.harness !== y.harness ||
       x.sessionId !== y.sessionId ||
       x.state !== y.state ||
       x.summary !== y.summary ||
@@ -286,3 +292,7 @@ function shallowEqualRows(a: SessionSnapshot[], b: SessionSnapshot[]): boolean {
   }
   return true
 }
+
+// Back-compat: keep StateReader as an alias for ClaudeAdapter so v0.1
+// imports + tests keep working. Drop in a future major bump.
+export { ClaudeAdapter as StateReader }

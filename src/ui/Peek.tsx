@@ -3,7 +3,13 @@ import { Box, Text } from 'ink'
 import TextInput from 'ink-text-input'
 import type { SessionSnapshot } from '../lib/types.js'
 import { inferRole, ROLE_GLYPH, ROLE_SHORT } from '../lib/roles.js'
-import { STATE_COLOR, STATE_GLYPH } from './theme.js'
+import {
+  HARNESS_COLOR,
+  HARNESS_NAME,
+  HARNESS_SIGIL,
+  STATE_COLOR,
+  STATE_GLYPH,
+} from './theme.js'
 import { formatBlockedFor } from '../lib/needsInput.js'
 
 interface Props {
@@ -31,7 +37,9 @@ export function Peek({ row, now, replyFocused, onSubmitReply, flash }: Props) {
         <Text color={stateColor} bold>
           {STATE_GLYPH[row.state]} {row.name}
         </Text>
-        <Text dimColor> ({ROLE_GLYPH[role]} {ROLE_SHORT[role]})</Text>
+        <Text color={HARNESS_COLOR[row.harness]} bold> {HARNESS_SIGIL[row.harness]}</Text>
+        <Text dimColor> ({HARNESS_NAME[row.harness]})</Text>
+        <Text dimColor> · ({ROLE_GLYPH[role]} {ROLE_SHORT[role]})</Text>
         <Text dimColor> · {row.sessionId}</Text>
       </Box>
 

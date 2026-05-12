@@ -1,65 +1,101 @@
 import React, { useEffect, useMemo } from 'react'
-import { Box, Text, useApp, useInput } from 'ink'
-import { useInbox, groupRows } from '../store/inbox.js'
-import { StateReader } from '../sources/state.js'
+import { Box, Text, useApp, useInput, useStdout } from 'ink'
+import { flatRows, groupRows, useInbox } from '../store/inbox.js'
+import { HarnessRegistry } from '../sources/adapter.js'
 import { Inbox } from './Inbox.js'
 import { Peek } from './Peek.js'
 import { Dispatch as DispatchView } from './Dispatch.js'
 import { attach, dispatch, reply, resolveDispatchCwd } from '../lib/commander.js'
 
 interface Props {
-  reader: StateReader
+  registry: HarnessRegistry
 }
 
 // App root. Owns:
-//   - the StateReader subscription (state.json polling)
+//   - the HarnessRegistry subscription (merged multi-harness emissions)
 //   - the 5s tick that advances escalation timing
-//   - the keyboard handler (1-9 peek, d dispatch, a attach, r reply, q quit, esc back)
+//   - the keyboard handler (1-9 peek, d dispatch, a attach, r reply,
+//     f cycle harness filter, q quit, esc back)
 //   - the view switch (inbox / peek / dispatch)
 //
-// Everything else is presentational.
-export function App({ reader }: Props) {
+// Width comes from `useStdout().stdout.columns` and drives the layout-mode
+// selection in Inbox/SidebarRow/Row.
+export function App({ registry }: Props) {
   const { exit } = useApp()
-  const rows = useInbox((s) => s.rows)
+  const { stdout } = useStdout()
+  const width = stdout?.columns ?? 80
+
+  const rowsByHarness = useInbox((s) => s.rowsByHarness)
+  const harnessFilter = useInbox((s) => s.harnessFilter)
   const now = useInbox((s) => s.now)
   const view = useInbox((s) => s.view)
   const peekId = useInbox((s) => s.peekId)
   const flash = useInbox((s) => s.flash)
 
-  const setRows = useInbox((s) => s.setRows)
+  const setHarnessRows = useInbox((s) => s.setHarnessRows)
   const tick = useInbox((s) => s.tick)
   const peek = useInbox((s) => s.peek)
   const openDispatch = useInbox((s) => s.openDispatch)
   const closeOverlay = useInbox((s) => s.closeOverlay)
   const setFlash = useInbox((s) => s.setFlash)
+  const cycleHarnessFilter = useInbox((s) => s.cycleHarnessFilter)
 
-  // Subscribe to the state reader and start its polling loop.
+  // Subscribe to the registry's merged stream. We split by harness on the
+  // emit so the store's per-harness slices stay accurate — this lets a
+  // future v0.3 expose "rows from this one harness only" without
+  // re-flattening.
   useEffect(() => {
-    const unsub = reader.onChange((next) => setRows(next))
-    reader.start()
+    const unsub = registry.onChange((merged) => {
+      // Group the merged emission back by harness so setHarnessRows can
+      // replace the right slice. The registry already does per-adapter
+      // replacement; this is the inverse projection for the store.
+      const byHarness = new Map<string, typeof merged>()
+      for (const row of merged) {
+        const arr = byHarness.get(row.harness) ?? []
+        arr.push(row)
+        byHarness.set(row.harness, arr)
+      }
+      for (const [harness, rows] of byHarness) {
+        setHarnessRows(harness as never, rows)
+      }
+      // Clear any harness whose slice went empty (adapter saw zero rows).
+      const seenIds = new Set(merged.map((r) => r.harness))
+      for (const id of registry.harnessIds) {
+        if (!seenIds.has(id)) setHarnessRows(id, [])
+      }
+    })
+    registry.start()
     return () => {
       unsub()
-      reader.stop()
+      registry.stop()
     }
-  }, [reader, setRows])
+  }, [registry, setHarnessRows])
 
-  // Tick every 5s so the escalation tier (awaiting → escalated → abandoned)
-  // advances without waiting for a state.json change.
   useEffect(() => {
     const id = setInterval(tick, 5_000)
     return () => clearInterval(id)
   }, [tick])
 
-  // Flat index → row lookup. Mirrors the order Inbox renders rows in so
-  // the 1-9 hotkeys land on the right card.
-  const flatRows = useMemo(() => {
-    const { needsYou, active, recent } = groupRows(rows, now)
-    return [...needsYou.map((x) => x.row), ...active, ...recent]
-  }, [rows, now])
+  // Memoize per-harness counts AND the filtered flat list so renderers
+  // don't recompute on unrelated state changes.
+  const filteredRows = useMemo(
+    () => flatRows(rowsByHarness, harnessFilter),
+    [rowsByHarness, harnessFilter],
+  )
 
-  // Reply input mode: when peeked and the user pressed 'r', we hand the
-  // raw stdin over to ink-text-input. Track that here so the keyboard
-  // handler doesn't double-fire on the same keystrokes.
+  const harnessCounts = useMemo(() => {
+    const out: Record<string, number> = {}
+    for (const [id, rows] of Object.entries(rowsByHarness)) out[id] = rows?.length ?? 0
+    return out as never
+  }, [rowsByHarness])
+
+  // Flat index → row lookup. Mirrors Inbox's render order so the 1-9
+  // hotkeys land on the right card.
+  const flatForHotkeys = useMemo(() => {
+    const { needsYou, active, recent } = groupRows(filteredRows, now)
+    return [...needsYou.map((x) => x.row), ...active, ...recent]
+  }, [filteredRows, now])
+
   const [replyFocused, setReplyFocused] = React.useState(false)
   useEffect(() => {
     if (view !== 'peek') setReplyFocused(false)
@@ -67,13 +103,11 @@ export function App({ reader }: Props) {
 
   useInput(
     (input, key) => {
-      // Quit anywhere.
       if (input === 'q' && !replyFocused && view !== 'dispatch') {
         exit()
         return
       }
 
-      // Escape returns to inbox from any overlay.
       if (key.escape) {
         if (replyFocused) {
           setReplyFocused(false)
@@ -83,17 +117,21 @@ export function App({ reader }: Props) {
         return
       }
 
-      // Dispatch from anywhere.
       if (input === 'd' && view === 'inbox') {
         openDispatch()
         return
       }
 
-      // Peek hotkeys 1-9 from inbox.
+      // Cycle harness filter from inbox view.
+      if (input === 'f' && view === 'inbox') {
+        cycleHarnessFilter(registry.harnessIds)
+        return
+      }
+
       if (view === 'inbox') {
         const n = parseInt(input, 10)
         if (!isNaN(n) && n >= 1 && n <= 9) {
-          const target = flatRows[n - 1]
+          const target = flatForHotkeys[n - 1]
           if (target) peek(target.sessionId)
           return
         }
@@ -103,11 +141,17 @@ export function App({ reader }: Props) {
         }
       }
 
-      // Peek-mode actions.
       if (view === 'peek' && peekId && !replyFocused) {
-        const row = flatRows.find((r) => r.sessionId === peekId)
+        const row = flatForHotkeys.find((r) => r.sessionId === peekId)
         if (!row) return
         if (input === 'a') {
+          if (row.harness !== 'claude') {
+            setFlash({
+              kind: 'err',
+              text: `attach is Claude-only in v0.2 (this is ${row.harness})`,
+            })
+            return
+          }
           void attach(row.sessionId).then((res) => {
             setFlash(
               res.ok
@@ -118,6 +162,13 @@ export function App({ reader }: Props) {
           return
         }
         if (input === 'r') {
+          if (row.harness !== 'claude') {
+            setFlash({
+              kind: 'err',
+              text: `reply is Claude-only in v0.2 (this is ${row.harness})`,
+            })
+            return
+          }
           setReplyFocused(true)
           return
         }
@@ -149,9 +200,8 @@ export function App({ reader }: Props) {
   }
 
   if (view === 'peek' && peekId) {
-    const row = flatRows.find((r) => r.sessionId === peekId)
+    const row = flatForHotkeys.find((r) => r.sessionId === peekId)
     if (!row) {
-      // Row disappeared between peek and render — return to inbox.
       closeOverlay()
       return null
     }
@@ -180,7 +230,14 @@ export function App({ reader }: Props) {
 
   return (
     <Box flexDirection="column" padding={1}>
-      <Inbox rows={rows} now={now} cursorId={peekId} />
+      <Inbox
+        rows={filteredRows}
+        now={now}
+        cursorId={peekId}
+        harnessCounts={harnessCounts}
+        harnessFilter={harnessFilter}
+        width={width}
+      />
       {flash && (
         <Box marginTop={1}>
           <Text color={flash.kind === 'ok' ? 'green' : 'red'}>
@@ -197,7 +254,7 @@ export function App({ reader }: Props) {
 function Footer({ mode }: { mode: 'inbox' | 'peek' | 'dispatch' }) {
   const hints =
     mode === 'inbox'
-      ? '[1-9] peek  [d] dispatch  [q] quit'
+      ? '[1-9] peek  [d] dispatch  [f] filter  [q] quit'
       : mode === 'peek'
         ? '[a] attach  [r] reply  [Esc] back  [q] quit'
         : '[Enter] confirm  [Esc] back'

@@ -10,11 +10,40 @@ export type SessionState =
   | 'stopped'
   | 'unknown'
 
+// Closed set of agent harnesses beto knows how to surface. Each id maps to
+// an Adapter implementation in src/sources/. v0.2 ships only the 'claude'
+// adapter; the rest are reserved so the UI can render rows from a mock
+// adapter against any id and v0.3+ can land real adapters one at a time
+// without touching the union.
+export type HarnessId =
+  | 'claude'
+  | 'codex'
+  | 'hermes'
+  | 'goose'
+  | 'kimi'
+  | 'openclaw'
+  | 'openhands'
+  | 'aider'
+
+export const HARNESS_IDS: readonly HarnessId[] = [
+  'claude',
+  'codex',
+  'hermes',
+  'goose',
+  'kimi',
+  'openclaw',
+  'openhands',
+  'aider',
+] as const
+
 // The minimum-viable row beto renders. Ported from aggro's StateSnapshot
 // (src-tauri/src/state_tailer.rs). Every field except sessionId and state
 // is best-effort: missing → empty string / 0 / false. The UI is built so a
 // row with only sessionId + state still renders meaningfully.
 export interface SessionSnapshot {
+  // Which adapter produced this row. Defaults to 'claude' for back-compat
+  // with v0.1 callers; new adapters must set this explicitly.
+  harness: HarnessId
   sessionId: string
   // Display name. Falls back to a slice of sessionId when missing.
   name: string

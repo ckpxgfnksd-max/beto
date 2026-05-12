@@ -2,7 +2,14 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { EscalationTier, SessionSnapshot } from '../lib/types.js'
 import { inferRole, ROLE_GLYPH, ROLE_SHORT } from '../lib/roles.js'
-import { STATE_COLOR, STATE_GLYPH, TIER_COLOR, TIER_LABEL } from './theme.js'
+import {
+  HARNESS_COLOR,
+  HARNESS_SIGIL,
+  STATE_COLOR,
+  STATE_GLYPH,
+  TIER_COLOR,
+  TIER_LABEL,
+} from './theme.js'
 import { formatBlockedFor } from '../lib/needsInput.js'
 
 interface Props {
@@ -50,6 +57,7 @@ export function Row({ index, row, tier, now, cursor }: Props) {
         <Text dimColor>[{slot}] </Text>
         <Text color={stateColor}>{STATE_GLYPH[row.state]} </Text>
         <Text bold>{row.name}</Text>
+        <Text color={HARNESS_COLOR[row.harness]} bold> {HARNESS_SIGIL[row.harness]}</Text>
         <Text dimColor> ({ROLE_GLYPH[role]} {ROLE_SHORT[role]}) </Text>
         <Text color={stateColor}>· {statusLine}</Text>
         {tierLabel ? (

@@ -1,40 +1,66 @@
-// Headless preview: renders ONE frame of the inbox against the seeded
-// jobs dir, prints the last frame to stdout, and exits.
+// Multi-harness, multi-width headless preview.
 //
-// Usage:
-//   bun scripts/seed-mock-jobs.ts
-//   bun scripts/preview-frame.tsx
+// Renders the inbox at three widths (45 / 65 / 100 cols) so the ultra /
+// sidebar / wide layout modes can all be visually verified in one
+// command. Reads .tmp/jobs-<harness>/ produced by seed-mock-jobs.ts.
 //
-// Useful for confirming layout/visual changes from a non-TTY context (CI,
-// agent verification). Not part of the shipped CLI.
+//   bun scripts/seed-mock-jobs.ts && bun scripts/preview-frame.tsx
 
-import React, { useEffect } from 'react'
+import React from 'react'
 import { render } from 'ink-testing-library'
-import { Inbox } from '../src/ui/Inbox.js'
-import { StateReader } from '../src/sources/state.js'
 import * as path from 'node:path'
-import type { SessionSnapshot } from '../src/lib/types.js'
+import { Inbox } from '../src/ui/Inbox.js'
+import { MockAdapter } from '../src/sources/mockAdapter.js'
+import { flatRows, countByHarness } from '../src/store/inbox.js'
+import type { HarnessId, SessionSnapshot } from '../src/lib/types.js'
 
-const jobsDir = path.resolve(process.cwd(), '.tmp/jobs')
+const ROOT = path.resolve(process.cwd(), '.tmp')
 
-const reader = new StateReader({ jobsDir })
-const rows = await reader.scan()
+const HARNESSES: HarnessId[] = ['claude', 'codex', 'hermes', 'goose']
 
-if (rows.length === 0) {
-  process.stderr.write(
-    `No state.json files in ${jobsDir}.\nRun: bun scripts/seed-mock-jobs.ts\n`,
-  )
+const adapters = HARNESSES.map(
+  (id) => new MockAdapter({ id, dir: path.join(ROOT, `jobs-${id}`) }),
+)
+
+// Manual scan-and-collect — bypass the polling loop for a one-shot render.
+// Each adapter's scan returns its harness-tagged rows.
+const rowsByHarness: Record<HarnessId, SessionSnapshot[]> = {} as Record<HarnessId, SessionSnapshot[]>
+for (const adapter of adapters) {
+  rowsByHarness[adapter.id] = await adapter.scan()
+}
+
+const merged = flatRows(rowsByHarness, null)
+if (merged.length === 0) {
+  process.stderr.write(`No mock state.json files in ${ROOT}/jobs-*. Run: bun scripts/seed-mock-jobs.ts\n`)
   process.exit(1)
 }
 
+const counts = countByHarness(rowsByHarness)
 const now = Date.now()
 
-function Frame({ rows }: { rows: SessionSnapshot[] }) {
-  return <Inbox rows={rows} now={now} cursorId={rows[0]?.sessionId ?? null} />
+function Frame({ rows, width }: { rows: SessionSnapshot[]; width: number }) {
+  return (
+    <Inbox
+      rows={rows}
+      now={now}
+      cursorId={rows[0]?.sessionId ?? null}
+      harnessCounts={counts}
+      harnessFilter={null}
+      width={width}
+    />
+  )
 }
 
-const { lastFrame, unmount } = render(<Frame rows={rows} />)
-// One render tick to let effects (none here) settle.
-await new Promise((r) => setTimeout(r, 50))
-process.stdout.write(lastFrame() + '\n')
-unmount()
+const widths = [
+  { label: 'ultra-compact (45 cols)', width: 45 },
+  { label: 'sidebar (65 cols)', width: 65 },
+  { label: 'wide (100 cols)', width: 100 },
+]
+
+for (const { label, width } of widths) {
+  process.stdout.write(`\n${'─'.repeat(width)}\n${label}\n${'─'.repeat(width)}\n`)
+  const { lastFrame, unmount } = render(<Frame rows={merged} width={width} />)
+  await new Promise((r) => setTimeout(r, 30))
+  process.stdout.write((lastFrame() ?? '') + '\n')
+  unmount()
+}
