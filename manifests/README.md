@@ -1,23 +1,43 @@
-# Reference manifests
+# beto manifests
 
-These are the manifests beto ships built-in. Each one is a working example of one of the four adapter kinds:
+Two tiers:
 
-| Manifest | Kind | Notes |
-|----------|------|-------|
-| `codex.json` | `directory-of-state-json` | OpenAI Codex CLI, scans `~/.codex/sessions/` |
-| `hermes.json` | `sqlite-sessions-table` | Nous Research Hermes, reads `~/.hermes/state.db` |
-| `goose.json` | `sqlite-sessions-table` | Block Goose, reads `~/.local/share/goose/sessions/sessions.db` |
-| `aider.json` | `process-watch-only` | Aider, synthesizes one row per running process |
-| `open-interpreter.json` | `jsonl-tail` | Open Interpreter, tails `~/.config/open-interpreter/conversations/*.jsonl` |
+| Tier | Directory | Loaded by default? | Verification status |
+|------|-----------|--------------------|---------------------|
+| **Verified** | `manifests/*.json` | yes | Field map exercised against a real install. Fixture snapshot in `test/fixtures/<harness>/`. Regression-tested in CI. |
+| **Experimental** | `manifests/experimental/*.json` | no — opt-in via `~/.beto/plugins/` | Field map is best-effort from public docs / research. May not work against a real install. PRs welcome with corrections. |
 
-## Status — verified vs. best-effort
+## Verified (loaded out of the box)
 
-**Verified against installed harnesses:** none yet.
+| Manifest | Adapter kind | Verified against |
+|----------|--------------|------------------|
+| Claude Code *(built-in adapter, not via manifest)* | n/a | 122 real sessions on developer machine (2026-05-12) |
+| `codex.json` | `jsonl-index` | 16 real sessions in `~/.codex/session_index.jsonl` (2026-05-12) |
 
-**Best-effort field maps from public docs / research:** all of the above.
+## Experimental (opt-in only)
 
-The field names in each `fieldMap` are derived from the research surveys in [the v0.2.1 PR](https://github.com/ckpxgfnksd-max/beto/pull/2) and may not match the real on-disk schema exactly. If you run one of these harnesses, please open a PR with the corrections — a one-line `fieldMap` adjustment makes the adapter work for everyone.
+| Manifest | Adapter kind | Notes |
+|----------|--------------|-------|
+| `experimental/hermes.json` | `sqlite-sessions-table` | Schema best-effort from Nous Research docs; needs verification on a real install |
+| `experimental/goose.json` | `sqlite-sessions-table` | Schema best-effort from Block/AAIF docs; needs verification on a real install |
+| `experimental/aider.json` | `process-watch-only` | Trivially works (no field map) but Aider's per-repo `.aider.chat.history.md` is not surfaced — only running processes |
+| `experimental/open-interpreter.json` | `jsonl-tail` | Schema best-effort; needs verification against `~/.config/open-interpreter/conversations/*.jsonl` |
 
-## Writing your own
+## Using experimental manifests
 
-Drop a JSON file into `~/.beto/plugins/`. Beto reads it on next launch. See [README.md → Plugin manifests](../README.md#plugin-manifests) for the schema.
+```sh
+mkdir -p ~/.beto/plugins
+cp manifests/experimental/hermes.json ~/.beto/plugins/
+# now beto will load it on next launch
+```
+
+If you run one of these harnesses, please contribute back. A one-line fieldMap PR turning an experimental manifest into a verified one is the single highest-leverage contribution to this repo.
+
+## Adding a new harness
+
+See [`../docs/manifest-spec.md`](../docs/manifest-spec.md) for the full spec. The TL;DR:
+
+1. Find where the harness writes session data (look in `~/.<harness-id>/`, `~/.local/share/<harness-id>/`, or `~/.config/<harness-id>/`).
+2. Pick the adapter kind that fits: `directory-of-state-json`, `sqlite-sessions-table`, `jsonl-tail`, `jsonl-index`, or `process-watch-only`.
+3. Map the harness's native field names to beto's normalized session shape via `fieldMap`.
+4. Drop the JSON in `~/.beto/plugins/<harness-id>.json` to test, then PR to `manifests/` (verified) or `manifests/experimental/` (best-effort).

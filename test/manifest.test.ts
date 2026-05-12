@@ -69,6 +69,39 @@ describe('validateManifest', () => {
     expect(r.ok).toBe(true)
   })
 
+  it('accepts a valid jsonl-index manifest', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-index',
+          config: {
+            filePath: '~/.codex/session_index.jsonl',
+            fieldMap: {
+              sessionId: 'id',
+              name: 'thread_name',
+              lastTransitionAt: 'updated_at',
+            },
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(true)
+    expect(r.manifest?.adapter.kind).toBe('jsonl-index')
+  })
+
+  it('rejects jsonl-index manifest with no filePath', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-index',
+          config: { fieldMap: { sessionId: 'id' } },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.path.includes('filePath'))).toBe(true)
+  })
+
   it('accepts process-watch-only with no config keys', () => {
     const r = validateManifest(
       valid({ adapter: { kind: 'process-watch-only', config: {} } }),

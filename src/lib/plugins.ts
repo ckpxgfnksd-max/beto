@@ -18,6 +18,7 @@ import {
 import { DirectoryOfStateJsonAdapter } from '../sources/kinds/directoryOfStateJson.js'
 import { SqliteSessionsTableAdapter } from '../sources/kinds/sqliteSessionsTable.js'
 import { JsonlTailAdapter } from '../sources/kinds/jsonlTail.js'
+import { JsonlIndexAdapter } from '../sources/kinds/jsonlIndex.js'
 import { ProcessWatchOnlyAdapter } from '../sources/kinds/processWatchOnly.js'
 import { registerHarnessTheme } from '../ui/theme.js'
 
@@ -124,6 +125,11 @@ export function buildAdapter(manifest: PluginManifest): Adapter {
       })
     case 'jsonl-tail':
       return new JsonlTailAdapter({
+        ...common,
+        config: manifest.adapter.config,
+      })
+    case 'jsonl-index':
+      return new JsonlIndexAdapter({
         ...common,
         config: manifest.adapter.config,
       })

@@ -17,6 +17,7 @@ export type AdapterKind =
   | 'directory-of-state-json'
   | 'sqlite-sessions-table'
   | 'jsonl-tail'
+  | 'jsonl-index'
   | 'process-watch-only'
 
 // Field map: maps SessionSnapshot fields to the harness's native keys.
@@ -59,6 +60,14 @@ export interface JsonlTailConfig {
   tailLines?: number
 }
 
+// Kind: jsonl-index. A single JSONL file where each line is a separate
+// session (e.g. Codex's ~/.codex/session_index.jsonl). Distinct from
+// jsonl-tail which reads one file per session.
+export interface JsonlIndexConfig {
+  filePath: string
+  fieldMap: FieldMap
+}
+
 // Kind: process-watch-only. No state on disk. Synthesize one row per
 // running process matching the binary name. Used for CLIs like Aider
 // that don't centralize state.
@@ -72,6 +81,7 @@ export type AdapterConfig =
   | { kind: 'directory-of-state-json'; config: DirectoryOfStateJsonConfig }
   | { kind: 'sqlite-sessions-table'; config: SqliteSessionsTableConfig }
   | { kind: 'jsonl-tail'; config: JsonlTailConfig }
+  | { kind: 'jsonl-index'; config: JsonlIndexConfig }
   | { kind: 'process-watch-only'; config: ProcessWatchOnlyConfig }
 
 // Optional token-source config for a manifest. When present, the plugin
@@ -203,6 +213,7 @@ export function validateManifest(raw: unknown): ValidationResult {
     'directory-of-state-json',
     'sqlite-sessions-table',
     'jsonl-tail',
+    'jsonl-index',
     'process-watch-only',
   ]
   if (!kind || !KINDS.includes(kind)) {
@@ -286,6 +297,16 @@ function validateAdapterConfig(
       if (!fileGlob || !fieldMap) return null
       const tailLines = pickNumber(cfg, 'tailLines')
       return { kind, config: { fileGlob, fieldMap, ...(tailLines ? { tailLines } : {}) } }
+    }
+    case 'jsonl-index': {
+      const filePath = pickString(cfg, 'filePath')
+      const fieldMap = pickFieldMap(cfg, 'fieldMap', errors)
+      if (!filePath) errors.push({ path: 'adapter.config.filePath', message: 'required string' })
+      if (!fieldMap?.sessionId) {
+        errors.push({ path: 'adapter.config.fieldMap.sessionId', message: 'required' })
+      }
+      if (!filePath || !fieldMap) return null
+      return { kind, config: { filePath, fieldMap } }
     }
     case 'process-watch-only': {
       const stateOnRunning = pickString(cfg, 'stateOnRunning')
