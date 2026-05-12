@@ -1,13 +1,14 @@
 {
   "name": "beto",
-  "version": "0.1.0",
-  "description": "A terminal inbox for Claude Code sessions. The needs-you channel for power users running 1-10 agents in parallel.",
+  "version": "0.3.0",
+  "description": "Universal terminal sidebar for AI agent sessions. Claude Code, Codex, Hermes, Goose, and any harness with a plugin manifest.",
   "type": "module",
   "bin": {
     "beto": "./dist/cli.js"
   },
   "files": [
     "dist",
+    "manifests",
     "README.md",
     "LICENSE"
   ],

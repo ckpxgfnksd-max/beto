@@ -4,9 +4,7 @@
 // Both consume a DetectionReport. The matrix view is human-diagnostic;
 // the banner is glanceable.
 
-import {
-  HARNESS_NAME,
-} from '../ui/theme.js'
+import { nameFor } from '../ui/theme.js'
 import type {
   DetectedHarness,
   DetectedInferenceBackend,
@@ -57,7 +55,7 @@ export function printBanner(report: DetectionReport, out: NodeJS.WriteStream = p
     const color = C[STATUS_COLOR[h.status]]
     const v = h.binary?.version ? ' ' + extractVersion(h.binary.version) : ''
     const dot = h.processCount > 0 ? '●' : '○'
-    parts.push(`${color}${dot} ${HARNESS_NAME[h.id]}${v}${C.reset}`)
+    parts.push(`${color}${dot} ${nameFor(h.id)}${v}${C.reset}`)
   }
   const inference = report.inferenceBackends.filter((b) => b.binary || b.processCount > 0)
   if (inference.length > 0) {

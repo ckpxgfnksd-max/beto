@@ -1,0 +1,23 @@
+{
+  "$schema": "https://github.com/ckpxgfnksd-max/beto/blob/main/manifest.schema.json",
+  "id": "open-interpreter",
+  "displayName": "Open Interpreter",
+  "sigil": "I",
+  "color": "magenta",
+  "binary": "interpreter",
+  "pollMs": 3000,
+  "readBudgetMs": 1500,
+  "adapter": {
+    "kind": "jsonl-tail",
+    "config": {
+      "fileGlob": "~/.config/open-interpreter/conversations/*.jsonl",
+      "fieldMap": {
+        "sessionId": "conversation_id",
+        "summary": "content",
+        "state": "type",
+        "lastTransitionAt": "created_at"
+      },
+      "tailLines": 50
+    }
+  }
+}

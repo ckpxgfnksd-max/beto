@@ -1,0 +1,93 @@
+import { describe, it, expect } from 'vitest'
+import { validateManifest } from '../src/lib/manifest.js'
+
+describe('validateManifest', () => {
+  function valid(over: Record<string, unknown> = {}): unknown {
+    return {
+      id: 'fakeharness',
+      displayName: 'Fake Harness',
+      binary: 'fakeharness',
+      adapter: {
+        kind: 'directory-of-state-json',
+        config: {
+          stateDirs: ['~/.fakeharness/sessions'],
+        },
+      },
+      ...over,
+    }
+  }
+
+  it('accepts a minimal valid manifest', () => {
+    const res = validateManifest(valid())
+    expect(res.ok).toBe(true)
+    expect(res.manifest?.id).toBe('fakeharness')
+  })
+
+  it('rejects non-object input', () => {
+    expect(validateManifest(null).ok).toBe(false)
+    expect(validateManifest('hello').ok).toBe(false)
+    expect(validateManifest([]).ok).toBe(false)
+  })
+
+  it('rejects bad id slugs', () => {
+    const r = validateManifest({ ...(valid() as object), id: 'Bad-Name' })
+    expect(r.ok).toBe(false)
+    expect(r.errors[0]?.path).toBe('id')
+  })
+
+  it('rejects unknown adapter kind', () => {
+    const r = validateManifest(valid({ adapter: { kind: 'made-up', config: {} } }))
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.path === 'adapter.kind')).toBe(true)
+  })
+
+  it('rejects sqlite-sessions-table without fieldMap.sessionId', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'sqlite-sessions-table',
+          config: { dbPath: '~/.x/db', table: 'sessions', fieldMap: {} },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+  })
+
+  it('accepts a valid jsonl-tail manifest', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-tail',
+          config: {
+            fileGlob: '~/.foo/*.jsonl',
+            fieldMap: { sessionId: 'id' },
+            tailLines: 20,
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(true)
+  })
+
+  it('accepts process-watch-only with no config keys', () => {
+    const r = validateManifest(
+      valid({ adapter: { kind: 'process-watch-only', config: {} } }),
+    )
+    expect(r.ok).toBe(true)
+  })
+
+  it('rejects pollMs out of range', () => {
+    const r = validateManifest(valid({ pollMs: 5 }))
+    expect(r.ok).toBe(false)
+    expect(r.errors[0]?.path).toBe('pollMs')
+  })
+
+  it('preserves optional fields when set', () => {
+    const r = validateManifest(
+      valid({ sigil: 'F', color: 'magenta', versionFlag: '-V' }),
+    )
+    expect(r.manifest?.sigil).toBe('F')
+    expect(r.manifest?.color).toBe('magenta')
+    expect(r.manifest?.versionFlag).toBe('-V')
+  })
+})

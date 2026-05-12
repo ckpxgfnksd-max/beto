@@ -38,28 +38,85 @@ Most observability tools answer "what did the agent do?" beto answers "should I 
 
 Each row carries a **harness sigil** so you can see at a glance whether the blocked session is Claude (`C`), Codex (`X`), Hermes (`H`), Goose (`G`), or any other. The three-tier escalation ramp (awaiting → escalated → abandoned) is universal — it doesn't care which provider the agent comes from.
 
-## What's wired today (v0.2)
+## What's wired today (v0.3)
 
-- **Universal sidebar UI** — single TUI that adapts from ultra-compact (<50 cols) → sidebar (50–80 cols) → wide (≥80 cols) based on terminal width. Drop beto into any pane and it fits.
+- **Universal sidebar UI** — single TUI that adapts from ultra-compact (<50 cols) → sidebar (50–80 cols) → wide (≥80 cols) based on terminal width.
 - **Harness-agnostic adapter pattern** — every provider plugs in behind a single `Adapter` interface; the store merges per-harness emissions into one flat list keyed by `<harness>:<sessionId>`.
-- **Claude Code adapter** — reads `~/.claude/jobs/<id>/state.json` directly. Same source `claude agents` reads. Zero install.
-- **MockAdapter** — synthetic adapter that wraps any directory of state-shaped JSON. Used by the seeder/preview to demo multi-harness rendering without any real harness installed.
-- **Config + auto-detect** — `~/.beto/config.json` auto-detects which harnesses are installed (`~/.claude/`, `~/.codex/`, `~/.hermes/`, `~/.openclaw/`, ...) and enables their slot. Edit the JSON to override.
-- **Harness filter** — press `f` to cycle (all → claude → codex → hermes → ...). The header shows the active filter; the buckets recount.
-- **Commander layer (Claude only in v0.2)** — dispatch / attach / reply against Claude sessions. Other harnesses' adapter slots are reserved but read-only until v0.3.
+- **Layered auto-detection** — PATH probe + version exec + XDG-aware state-dir probe + process scan, fused into a status spectrum. Cached at `~/.beto/cache/detection.json` with a 1h TTL + mtime invalidation. Run `beto doctor` for the full matrix.
+- **Startup banner** — every launch prints one line: `beto detected: ○ Claude Code 2.1.x · ○ Codex · backends: ollama`.
+- **Plugin manifest schema** — drop a `*.json` into `~/.beto/plugins/` and beto auto-registers an adapter on next launch. Five reference manifests ship in `manifests/` (Codex, Hermes, Goose, Aider, Open Interpreter).
+- **Four built-in adapter kinds:** `directory-of-state-json` · `sqlite-sessions-table` (shells out to `sqlite3` CLI) · `jsonl-tail` · `process-watch-only`.
+- **Built-in Claude adapter** — the canonical first-party harness with a working commander layer (dispatch / attach / reply via clipboard). Other harnesses are read-only via plugins for now.
+- **Harness filter** — press `f` to cycle.
+
+## Plugin manifests
+
+Most harnesses load via JSON manifests, not hand-written TypeScript. Each manifest declares its identity, binary, and which of the four adapter kinds reads its state.
+
+Example (`manifests/codex.json`):
+
+```json
+{
+  "id": "codex",
+  "displayName": "Codex",
+  "sigil": "X",
+  "color": "green",
+  "binary": "codex",
+  "pollMs": 2000,
+  "readBudgetMs": 1500,
+  "adapter": {
+    "kind": "directory-of-state-json",
+    "config": {
+      "stateDirs": ["~/.codex/sessions", "~/.local/share/codex/sessions"],
+      "fieldMap": {
+        "sessionId": "id",
+        "state": "status",
+        "summary": "current_summary",
+        "lastTransitionAt": "updated_at_ms"
+      }
+    }
+  }
+}
+```
+
+Drop your own into `~/.beto/plugins/`. User manifests override bundled ones with the same `id`.
+
+### Adapter kinds
+
+| Kind                       | When to use                                              | Required config              |
+|----------------------------|----------------------------------------------------------|------------------------------|
+| `directory-of-state-json`  | One `state.json` per session under one or more dirs     | `stateDirs[]`                |
+| `sqlite-sessions-table`    | SQLite db with a sessions table (shells out to sqlite3) | `dbPath`, `table`, `fieldMap` |
+| `jsonl-tail`               | One JSONL file per session; latest record = current state | `fileGlob`, `fieldMap`     |
+| `process-watch-only`       | No state on disk; synthesize one row per running process | (none)                       |
+
+Every kind supports an optional `readBudgetMs` (default 1500). If a single poll exceeds it, the adapter gives up and reuses the previous emission — the *open-with-timeouts* guarantee: a misbehaving plugin can't block the rest of the inbox.
+
+### Reference manifests bundled
+
+| Manifest               | Kind                       | Status              |
+|------------------------|----------------------------|---------------------|
+| `codex.json`           | `directory-of-state-json` | Best-effort fieldMap, needs verification on a real Codex install |
+| `hermes.json`          | `sqlite-sessions-table`   | Best-effort schema, needs verification |
+| `goose.json`           | `sqlite-sessions-table`   | Best-effort schema, needs verification |
+| `aider.json`           | `process-watch-only`      | Works as-is (no schema to map)         |
+| `open-interpreter.json`| `jsonl-tail`              | Best-effort fieldMap, needs verification |
+
+Field maps may not match the real on-disk schemas exactly — see `manifests/README.md`. If you run one of these tools, a one-line `fieldMap` PR makes the adapter work for everyone.
 
 ## Roadmap
 
-| Version | Adds                                                                       |
-|---------|----------------------------------------------------------------------------|
-| v0.2 *(now)* | Universal sidebar UI · adapter pattern · Claude adapter · mock multi-harness |
-| v0.3    | First real second adapter (Codex CLI: `~/.codex/state_5.sqlite` + JSONL streams) |
-| v0.4    | Hermes Agent adapter (`~/.hermes/state.db` SQLite, explicit approval-blocked state) |
-| v0.5    | Goose adapter (Block / AAIF) · OpenHands adapter                          |
-| v0.6+   | OpenClaw adapter (once on-disk schema is published)                       |
-| later   | Kimi (cloud-backed, needs daemon) · Aider (per-repo workspace scan)       |
+| Version | Status | Adds                                                                       |
+|---------|--------|----------------------------------------------------------------------------|
+| v0.2    | ✓      | Universal sidebar UI · adapter pattern · multi-harness mock              |
+| v0.2.1  | ✓      | Layered auto-detection (PATH + state-dir + process scan) · `beto doctor` |
+| v0.3 *(now)* | ✓ | Plugin manifest schema · 4 adapter kinds · 5 reference manifests          |
+| v0.4    |        | Verified field-maps via real-install testing                              |
+| v0.5    |        | Desktop notifications on `needs-input` transitions                        |
+| v0.6+   |        | Per-harness commander layer (dispatch/attach/reply beyond Claude)         |
+| v1.0    |        | macOS menubar UI · published to npm                                       |
 
-The order is driven by *what's disk-readable from a public schema*. Adapters whose underlying CLI doesn't write per-session state (Kimi is cloud-backed; Aider only logs per-repo) wait until they do or until the daemon design is in place.
+After v0.3, growth is mostly community manifests — anyone can extend beto without forking.
 
 ## Install
 
@@ -88,8 +145,8 @@ Launch `beto` in any terminal pane. It refreshes every two seconds from each ena
 |----------|-------------------------------------------------------|
 | `1`–`9`  | Peek the Nth session in the list                      |
 | `d`      | Dispatch a new Claude session (`claude --bg "<task>"`) |
-| `a`      | (in peek) Attach: open Terminal — Claude only in v0.2 |
-| `r`      | (in peek) Reply via clipboard — Claude only in v0.2   |
+| `a`      | (in peek) Attach: open Terminal — Claude only             |
+| `r`      | (in peek) Reply via clipboard — Claude only               |
 | `f`      | Cycle the harness filter (all → claude → codex → ...) |
 | `Esc`    | Back / close overlay                                  |
 | `q`      | Quit                                                  |

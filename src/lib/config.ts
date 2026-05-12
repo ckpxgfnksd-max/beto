@@ -79,7 +79,7 @@ export async function loadOrInitConfig(p?: ConfigPaths): Promise<BetoConfig> {
       return cfg
     }
     process.stderr.write(`beto: config ${file} unreadable (${String(e)}); using defaults\n`)
-    return mergeWithDefaults({ harnesses: { claude: { enabled: true } } } as BetoConfig)
+    return mergeWithDefaults({})
   }
 }
 

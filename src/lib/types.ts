@@ -10,14 +10,14 @@ export type SessionState =
   | 'stopped'
   | 'unknown'
 
-// Closed set of agent harnesses beto knows about *built-in*. Each id has a
-// reserved row sigil + detection probes. v0.2 ships only the 'claude'
-// adapter; v0.3 wires the rest via the plugin-manifest schema so adding
-// a new harness becomes a manifest contribution, not a TypeScript PR.
-//
-// Anything not in this list can still be registered at runtime by dropping
-// a manifest into ~/.beto/plugins/ (v0.3+).
-export type HarnessId =
+// Harness ids are open as of v0.3: built-ins below, plus any id declared
+// in a user-installed manifest at ~/.beto/plugins/*.json. The closed
+// `BuiltInHarnessId` union still anchors detection probes + theme defaults;
+// unknown ids fall back to manifest-supplied sigil/color or generic
+// defaults.
+export type HarnessId = string
+
+export type BuiltInHarnessId =
   | 'claude'
   | 'codex'
   | 'hermes'
@@ -30,7 +30,7 @@ export type HarnessId =
   | 'crewai'
   | 'metagpt'
 
-export const HARNESS_IDS: readonly HarnessId[] = [
+export const BUILT_IN_HARNESS_IDS: readonly BuiltInHarnessId[] = [
   'claude',
   'codex',
   'hermes',
@@ -43,6 +43,13 @@ export const HARNESS_IDS: readonly HarnessId[] = [
   'crewai',
   'metagpt',
 ] as const
+
+// Back-compat: code that wants the built-in list often imported HARNESS_IDS.
+export const HARNESS_IDS = BUILT_IN_HARNESS_IDS
+
+export function isBuiltInHarness(id: HarnessId): id is BuiltInHarnessId {
+  return (BUILT_IN_HARNESS_IDS as readonly string[]).includes(id)
+}
 
 // Local inference daemons we detect *informationally*. Not harnesses —
 // they don't host agent sessions — but their presence is a signal that

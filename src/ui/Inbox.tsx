@@ -4,7 +4,7 @@ import type { HarnessId, SessionSnapshot } from '../lib/types.js'
 import { groupRows } from '../store/inbox.js'
 import { Row } from './Row.js'
 import { SidebarRow } from './SidebarRow.js'
-import { HARNESS_COLOR, HARNESS_SIGIL, pickLayout } from './theme.js'
+import { colorFor, pickLayout, sigilFor } from './theme.js'
 
 interface Props {
   rows: SessionSnapshot[]
@@ -164,8 +164,8 @@ function Header({
           <Text dimColor> (</Text>
           {tally.map((t, i) => (
             <React.Fragment key={t.id}>
-              <Text color={HARNESS_COLOR[t.id]}>
-                {t.n}{HARNESS_SIGIL[t.id]}
+              <Text color={colorFor(t.id)}>
+                {t.n}{sigilFor(t.id)}
               </Text>
               {i < tally.length - 1 && <Text dimColor> </Text>}
             </React.Fragment>
@@ -184,7 +184,7 @@ function Header({
         <Box>
           <Text dimColor>  filter:</Text>
           {[...filter].map((id) => (
-            <Text key={id} color={HARNESS_COLOR[id]}> {HARNESS_SIGIL[id]}</Text>
+            <Text key={id} color={colorFor(id)}> {sigilFor(id)}</Text>
           ))}
         </Box>
       )}

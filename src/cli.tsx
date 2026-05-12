@@ -26,6 +26,8 @@ import { HarnessRegistry } from './sources/adapter.js'
 import { loadOrInitConfig } from './lib/config.js'
 import { detect } from './lib/detect.js'
 import { printBanner, printDoctor } from './lib/doctor.js'
+import { loadPlugins } from './lib/plugins.js'
+import { fileURLToPath } from 'node:url'
 import { HARNESS_IDS, type HarnessId } from './lib/types.js'
 
 const args = process.argv.slice(2)
@@ -41,7 +43,7 @@ if (args.includes('--help') || args.includes('-h')) {
   process.exit(0)
 }
 if (args.includes('--version') || args.includes('-V')) {
-  process.stdout.write('beto 0.2.1\n')
+  process.stdout.write('beto 0.3.0\n')
   process.exit(0)
 }
 
@@ -59,9 +61,11 @@ const mockDir = arg('mock-dir')
 const harnessOverride = arg('harness') as HarnessId | undefined
 const pollMs = arg('poll') ? Number(arg('poll')) : undefined
 
-if (harnessOverride && !HARNESS_IDS.includes(harnessOverride)) {
-  process.stderr.write(`beto: unknown harness '${harnessOverride}'. valid: ${HARNESS_IDS.join(', ')}\n`)
-  process.exit(2)
+if (harnessOverride && !(HARNESS_IDS as readonly string[]).includes(harnessOverride)) {
+  // Could still be a valid plugin-registered id. Warn but proceed.
+  process.stderr.write(
+    `beto: '${harnessOverride}' not a built-in harness; assuming it's a plugin id\n`,
+  )
 }
 
 const registry = new HarnessRegistry()
@@ -73,7 +77,7 @@ if (mockDir) {
   for (const ent of entries) {
     if (!ent.isDirectory() || !ent.name.startsWith('jobs-')) continue
     const id = ent.name.slice(5) as HarnessId
-    if (!HARNESS_IDS.includes(id)) continue
+    if (!(HARNESS_IDS as readonly string[]).includes(id)) continue
     registry.add(
       new MockAdapter({
         id,
@@ -98,31 +102,48 @@ if (mockDir) {
     }),
   )
 } else {
-  // Normal launch: load (or initialize) ~/.beto/config.json (which now
-  // uses the layered detector internally), then start every enabled
-  // adapter. v0.2.1 only the claude adapter actually reads a path; the
-  // rest are reserved slots until v0.3 lands the manifest schema.
+  // Normal launch: detect → banner → config → plugins → built-in Claude.
   const cfg = await loadOrInitConfig()
-
-  // Re-run detect.ts for the startup banner (option b: explicit). Cheap
-  // because the loadOrInitConfig call above primed the cache.
   const detectionReport = await detect()
   printBanner(detectionReport)
 
-  const enabled = (Object.entries(cfg.harnesses) as Array<[HarnessId, { enabled: boolean; path?: string }]>)
-    .filter(([id, h]) => h.enabled && (!harnessOverride || id === harnessOverride))
-
-  for (const [id, h] of enabled) {
-    if (id === 'claude') {
-      registry.add(
-        new ClaudeAdapter({
-          jobsDir: h.path,
-          pollMs: pollMs && pollMs > 0 ? pollMs : undefined,
-        }),
-      )
+  // Load plugins from ~/.beto/plugins/ + the manifests/ directory shipped
+  // with this repo (so first-time users get reference adapters without a
+  // separate install). User-installed manifests take precedence on id
+  // collisions.
+  const bundledDir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'manifests',
+  )
+  const pluginResult = await loadPlugins({ extraDirs: [bundledDir] })
+  for (const plugin of pluginResult.loaded) {
+    // If a non-Claude harness is plugin-backed and the user explicitly
+    // restricted via --harness, respect that filter.
+    if (harnessOverride && plugin.manifest.id !== harnessOverride) continue
+    registry.add(plugin.adapter)
+  }
+  if (pluginResult.failures.length > 0) {
+    for (const f of pluginResult.failures) {
+      process.stderr.write(`beto: skipped manifest ${f.sourcePath}: `)
+      if (typeof f.errors === 'string') {
+        process.stderr.write(f.errors + '\n')
+      } else {
+        process.stderr.write(f.errors.map((e) => `${e.path}: ${e.message}`).join('; ') + '\n')
+      }
     }
-    // Other harnesses fall through silently in v0.2.1 — the slot is
-    // reserved but the adapter lands in v0.3+ via the plugin manifest.
+  }
+
+  // The built-in Claude adapter still wires up directly (not via
+  // manifest) — it's the canonical first-party harness and the only one
+  // with a working dispatch/attach/reply commander layer in v0.3.
+  if (cfg.harnesses.claude?.enabled && (!harnessOverride || harnessOverride === 'claude')) {
+    registry.add(
+      new ClaudeAdapter({
+        jobsDir: cfg.harnesses.claude.path,
+        pollMs: pollMs && pollMs > 0 ? pollMs : undefined,
+      }),
+    )
   }
 }
 
@@ -155,12 +176,18 @@ Keyboard:
   Esc    back / close overlay
   q      quit
 
-Harnesses (v0.2.1):
+Harnesses (built-in detection):
   ${HARNESS_IDS.join(' · ')}
-  Only \`claude\` has a real adapter today. The rest are reserved slots
-  detected by PATH + state-dir + process scan. v0.3 lands a plugin
-  manifest schema (\`~/.beto/plugins/*.json\`) so anyone can register a
-  harness without a TypeScript PR.
+
+Adapters (v0.3):
+  Claude has its built-in adapter; everything else loads via plugin
+  manifests at ~/.beto/plugins/*.json. Four built-in adapter kinds:
+    - directory-of-state-json   (Claude / Codex)
+    - sqlite-sessions-table     (Hermes / Goose)
+    - jsonl-tail                (Open Interpreter / Aider variants)
+    - process-watch-only        (Aider / any process-only CLI)
+  Reference manifests ship in manifests/. Drop your own into
+  ~/.beto/plugins/ — they override the bundled ones by id.
 
 Source: https://github.com/ckpxgfnksd-max/beto
 `

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://github.com/ckpxgfnksd-max/beto/blob/main/manifest.schema.json",
+  "id": "goose",
+  "displayName": "Goose",
+  "sigil": "G",
+  "color": "cyan",
+  "binary": "goose",
+  "pollMs": 2000,
+  "readBudgetMs": 1500,
+  "adapter": {
+    "kind": "sqlite-sessions-table",
+    "config": {
+      "dbPath": "~/.local/share/goose/sessions/sessions.db",
+      "table": "sessions",
+      "fieldMap": {
+        "sessionId": "id",
+        "name": "name",
+        "state": "state",
+        "summary": "summary",
+        "lastTransitionAt": "updated_at",
+        "cwd": "working_directory"
+      },
+      "limit": 200
+    }
+  }
+}
