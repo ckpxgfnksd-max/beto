@@ -1,5 +1,5 @@
 {
-  "$schema": "https://github.com/ckpxgfnksd-max/beto/blob/main/manifest.schema.json",
+  "$schema": "https://github.com/ckpxgfnksd-max/beto/blob/main/docs/manifest-spec.md",
   "id": "codex",
   "displayName": "Codex",
   "sigil": "X",
@@ -8,19 +8,13 @@
   "pollMs": 2000,
   "readBudgetMs": 1500,
   "adapter": {
-    "kind": "directory-of-state-json",
+    "kind": "jsonl-index",
     "config": {
-      "stateDirs": [
-        "~/.codex/sessions",
-        "~/.local/share/codex/sessions"
-      ],
+      "filePath": "~/.codex/session_index.jsonl",
       "fieldMap": {
         "sessionId": "id",
-        "name": "title",
-        "state": "status",
-        "summary": "current_summary",
-        "lastTransitionAt": "updated_at_ms",
-        "cwd": "cwd"
+        "name": "thread_name",
+        "lastTransitionAt": "updated_at"
       }
     }
   }
