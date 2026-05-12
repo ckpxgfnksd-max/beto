@@ -78,7 +78,7 @@ if (args.includes('--help') || args.includes('-h')) {
   process.exit(0)
 }
 if (args.includes('--version') || args.includes('-V')) {
-  process.stdout.write('beto 0.7.0\n')
+  process.stdout.write('beto 0.8.0\n')
   process.exit(0)
 }
 

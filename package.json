@@ -1,7 +1,22 @@
 {
   "name": "beto",
-  "version": "0.7.0",
-  "description": "Universal terminal sidebar for AI agent sessions. Claude Code, Codex, Hermes, Goose, and any harness with a plugin manifest.",
+  "version": "0.8.0",
+  "description": "Inbox for stuck AI coding agents. Surfaces sessions that need your input — Claude Code, Codex, OpenCode, and any harness with a plugin manifest.",
+  "keywords": [
+    "ai",
+    "agents",
+    "claude-code",
+    "codex",
+    "opencode",
+    "tui",
+    "menubar",
+    "monitor",
+    "cli"
+  ],
+  "homepage": "https://github.com/ckpxgfnksd-max/beto#readme",
+  "bugs": {
+    "url": "https://github.com/ckpxgfnksd-max/beto/issues"
+  },
   "type": "module",
   "bin": {
     "beto": "./dist/cli.js"
@@ -10,6 +25,7 @@
     "dist",
     "manifests",
     "bin",
+    "docs",
     "README.md",
     "LICENSE"
   ],
@@ -18,7 +34,8 @@
     "build": "bun scripts/build.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "seed": "bun scripts/seed-mock-jobs.ts"
+    "seed": "bun scripts/seed-mock-jobs.ts",
+    "prepublishOnly": "bun run typecheck && bun run test && bun run build"
   },
   "dependencies": {
     "ink": "^5.0.1",
