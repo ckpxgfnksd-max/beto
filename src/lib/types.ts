@@ -10,11 +10,13 @@ export type SessionState =
   | 'stopped'
   | 'unknown'
 
-// Closed set of agent harnesses beto knows how to surface. Each id maps to
-// an Adapter implementation in src/sources/. v0.2 ships only the 'claude'
-// adapter; the rest are reserved so the UI can render rows from a mock
-// adapter against any id and v0.3+ can land real adapters one at a time
-// without touching the union.
+// Closed set of agent harnesses beto knows about *built-in*. Each id has a
+// reserved row sigil + detection probes. v0.2 ships only the 'claude'
+// adapter; v0.3 wires the rest via the plugin-manifest schema so adding
+// a new harness becomes a manifest contribution, not a TypeScript PR.
+//
+// Anything not in this list can still be registered at runtime by dropping
+// a manifest into ~/.beto/plugins/ (v0.3+).
 export type HarnessId =
   | 'claude'
   | 'codex'
@@ -24,6 +26,9 @@ export type HarnessId =
   | 'openclaw'
   | 'openhands'
   | 'aider'
+  | 'open-interpreter'
+  | 'crewai'
+  | 'metagpt'
 
 export const HARNESS_IDS: readonly HarnessId[] = [
   'claude',
@@ -34,6 +39,32 @@ export const HARNESS_IDS: readonly HarnessId[] = [
   'openclaw',
   'openhands',
   'aider',
+  'open-interpreter',
+  'crewai',
+  'metagpt',
+] as const
+
+// Local inference daemons we detect *informationally*. Not harnesses —
+// they don't host agent sessions — but their presence is a signal that
+// the user runs local models, so beto doctor surfaces them with a hint
+// about registering an agent that uses them via the plugin schema.
+export type InferenceBackendId =
+  | 'ollama'
+  | 'vllm'
+  | 'llama-server'
+  | 'lmstudio'
+  | 'litellm'
+  | 'tgi'
+  | 'huggingface-cli'
+
+export const INFERENCE_BACKEND_IDS: readonly InferenceBackendId[] = [
+  'ollama',
+  'vllm',
+  'llama-server',
+  'lmstudio',
+  'litellm',
+  'tgi',
+  'huggingface-cli',
 ] as const
 
 // The minimum-viable row beto renders. Ported from aggro's StateSnapshot

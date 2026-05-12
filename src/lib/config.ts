@@ -13,6 +13,7 @@ import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { HARNESS_IDS, type HarnessId } from './types.js'
+import { detect, type DetectionReport } from './detect.js'
 
 export interface HarnessConfig {
   enabled: boolean
@@ -30,7 +31,9 @@ const CONFIG_VERSION: 1 = 1
 
 // Canonical home-relative path each adapter looks at by default. v0.2 only
 // reads `~/.claude/`; the other entries are presence-probes for the
-// auto-detect logic.
+// auto-detect logic. v0.2.1 prefers the richer detect.ts probe (PATH +
+// state-dir + process scan), but keeps these as a fallback for cases
+// where detect.ts can't run (e.g., no PATH).
 const DEFAULT_PATHS: Record<HarnessId, string> = {
   claude: '.claude/jobs',
   codex: '.codex',
@@ -40,6 +43,9 @@ const DEFAULT_PATHS: Record<HarnessId, string> = {
   openclaw: '.openclaw',
   openhands: '.openhands',
   aider: '', // per-repo, not centralized
+  'open-interpreter': '.config/open-interpreter',
+  crewai: '.crewai',
+  metagpt: '.metagpt',
 }
 
 export interface ConfigPaths {
@@ -83,24 +89,35 @@ export async function writeConfig(cfg: BetoConfig, p?: ConfigPaths): Promise<voi
   await fs.writeFile(file, JSON.stringify(cfg, null, 2) + '\n')
 }
 
-// Build a config by probing for each harness's home directory. Present →
-// enabled, absent → disabled. Aider always disabled in auto-detect because
-// it's per-repo and has no central state to read in v0.2.
+// Build a config by probing for each harness. v0.2.1: prefers the rich
+// layered detector (PATH + state-dir + process scan) and falls back to
+// the simple state-dir probe if detection fails. A harness is enabled
+// when status is anything except 'absent' — installed-but-no-state still
+// counts so the row sigil is reserved and the user sees the slot.
 export async function autoDetect(p?: ConfigPaths): Promise<BetoConfig> {
   const home = homeDir(p)
   const harnesses: Partial<Record<HarnessId, HarnessConfig>> = {}
+
+  let report: DetectionReport | null = null
+  try {
+    report = await detect({ home })
+  } catch {
+    // Detection is best-effort; fall through to the simple probe below.
+  }
+
   for (const id of HARNESS_IDS) {
-    const rel = DEFAULT_PATHS[id]
-    if (!rel) {
-      harnesses[id] = { enabled: false }
-      continue
+    if (report) {
+      const detected = report.harnesses.find((h) => h.id === id)
+      const enabled = !!detected && detected.status !== 'absent'
+      const cfg: HarnessConfig = { enabled }
+      if (detected?.stateDir) cfg.path = detected.stateDir
+      harnesses[id] = cfg
+    } else {
+      const rel = DEFAULT_PATHS[id]
+      const candidate = rel ? path.join(home, rel) : ''
+      const exists = rel ? await pathExists(candidate) : false
+      harnesses[id] = { enabled: exists }
     }
-    const candidate = path.join(home, rel)
-    const exists = await pathExists(candidate)
-    // v0.2 only the claude adapter actually reads a path. For others, the
-    // 'enabled' flag is reserved for v0.3+; until then, even an enabled
-    // codex entry simply means "I'd want it on, no adapter yet."
-    harnesses[id] = { enabled: exists }
   }
   return { version: CONFIG_VERSION, harnesses: harnesses as Record<HarnessId, HarnessConfig> }
 }

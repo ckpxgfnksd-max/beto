@@ -57,6 +57,9 @@ export const HARNESS_SIGIL: Record<HarnessId, string> = {
   openclaw: 'O',
   openhands: 'D',
   aider: 'A',
+  'open-interpreter': 'I',
+  crewai: 'W', // creW
+  metagpt: 'M',
 }
 
 // Display name per harness — header tooltip + peek panel.
@@ -69,19 +72,25 @@ export const HARNESS_NAME: Record<HarnessId, string> = {
   openclaw: 'OpenClaw',
   openhands: 'OpenHands',
   aider: 'Aider',
+  'open-interpreter': 'Open Interpreter',
+  crewai: 'Crew AI',
+  metagpt: 'MetaGPT',
 }
 
 // Per-harness accent color. Used to tint the sigil so the eye can scan
 // harness-mix at a glance without reading the letter.
 export const HARNESS_COLOR: Record<HarnessId, string> = {
-  claude: 'magentaBright', // Anthropic accent
-  codex: 'green', // OpenAI green
-  hermes: 'blueBright', // Nous Hermes
-  goose: 'cyan', // Block Goose
-  kimi: 'yellowBright', // Moonshot Kimi
-  openclaw: 'red', // OpenClaw
-  openhands: 'whiteBright', // OpenHands
-  aider: 'gray', // Aider
+  claude: 'magentaBright',
+  codex: 'green',
+  hermes: 'blueBright',
+  goose: 'cyan',
+  kimi: 'yellowBright',
+  openclaw: 'red',
+  openhands: 'whiteBright',
+  aider: 'gray',
+  'open-interpreter': 'magenta',
+  crewai: 'greenBright',
+  metagpt: 'blue',
 }
 
 // Layout-mode breakpoints (terminal columns).

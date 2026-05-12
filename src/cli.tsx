@@ -24,6 +24,8 @@ import { ClaudeAdapter } from './sources/state.js'
 import { MockAdapter } from './sources/mockAdapter.js'
 import { HarnessRegistry } from './sources/adapter.js'
 import { loadOrInitConfig } from './lib/config.js'
+import { detect } from './lib/detect.js'
+import { printBanner, printDoctor } from './lib/doctor.js'
 import { HARNESS_IDS, type HarnessId } from './lib/types.js'
 
 const args = process.argv.slice(2)
@@ -39,7 +41,16 @@ if (args.includes('--help') || args.includes('-h')) {
   process.exit(0)
 }
 if (args.includes('--version') || args.includes('-V')) {
-  process.stdout.write('beto 0.2.0\n')
+  process.stdout.write('beto 0.2.1\n')
+  process.exit(0)
+}
+
+// Subcommand: `beto doctor` prints the detection matrix and exits.
+// Accepts --no-cache to force a fresh probe.
+if (args[0] === 'doctor') {
+  const useCache = !args.includes('--no-cache')
+  const report = await detect({ useCache })
+  printDoctor(report)
   process.exit(0)
 }
 
@@ -87,10 +98,17 @@ if (mockDir) {
     }),
   )
 } else {
-  // Normal launch: load (or initialize) ~/.beto/config.json and start
-  // every enabled adapter. v0.2 only the claude adapter actually reads
-  // a path; future v0.3 wires the rest.
+  // Normal launch: load (or initialize) ~/.beto/config.json (which now
+  // uses the layered detector internally), then start every enabled
+  // adapter. v0.2.1 only the claude adapter actually reads a path; the
+  // rest are reserved slots until v0.3 lands the manifest schema.
   const cfg = await loadOrInitConfig()
+
+  // Re-run detect.ts for the startup banner (option b: explicit). Cheap
+  // because the loadOrInitConfig call above primed the cache.
+  const detectionReport = await detect()
+  printBanner(detectionReport)
+
   const enabled = (Object.entries(cfg.harnesses) as Array<[HarnessId, { enabled: boolean; path?: string }]>)
     .filter(([id, h]) => h.enabled && (!harnessOverride || id === harnessOverride))
 
@@ -103,8 +121,8 @@ if (mockDir) {
         }),
       )
     }
-    // Other harnesses fall through silently in v0.2 — the slot is
-    // reserved but the adapter lands in v0.3+.
+    // Other harnesses fall through silently in v0.2.1 — the slot is
+    // reserved but the adapter lands in v0.3+ via the plugin manifest.
   }
 }
 
@@ -120,6 +138,7 @@ function usage(): string {
 
 Usage:
   beto                          launch (reads ~/.beto/config.json)
+  beto doctor [--no-cache]      print the detection matrix and exit
   beto --jobs-dir <path>        single-harness, Claude jobs dir override
   beto --mock-dir <path>        multi-harness mock mode (.tmp/jobs-*/)
   beto --harness <id>           restrict to one adapter (claude|codex|...)
@@ -130,16 +149,18 @@ Usage:
 Keyboard:
   1-9    peek the Nth session
   d      dispatch a new Claude session (\`claude --bg "<prompt>"\`)
-  a      (in peek) attach via Terminal — Claude only in v0.2
-  r      (in peek) reply via clipboard — Claude only in v0.2
+  a      (in peek) attach via Terminal — Claude only in v0.2.x
+  r      (in peek) reply via clipboard — Claude only in v0.2.x
   f      cycle the harness filter (all → claude → codex → ...)
   Esc    back / close overlay
   q      quit
 
-Harnesses (v0.2):
+Harnesses (v0.2.1):
   ${HARNESS_IDS.join(' · ')}
   Only \`claude\` has a real adapter today. The rest are reserved slots
-  ready for v0.3+ adapter implementations.
+  detected by PATH + state-dir + process scan. v0.3 lands a plugin
+  manifest schema (\`~/.beto/plugins/*.json\`) so anyone can register a
+  harness without a TypeScript PR.
 
 Source: https://github.com/ckpxgfnksd-max/beto
 `
