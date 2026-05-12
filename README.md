@@ -44,7 +44,7 @@ curl -fsSL https://github.com/ckpxgfnksd-max/beto/raw/main/scripts/install.sh | 
 
 Detects your platform, downloads the matching binary from the latest GitHub Release, verifies SHA-256, installs to `/usr/local/bin/beto` (falls back to `~/.local/bin`). No Bun required. Supported: macOS arm64 / macOS x64 / Linux x64.
 
-Already have a JS runtime? `npm i -g beto` or `bun add -g beto` work too.
+Already have a JS runtime? `npm i -g beto-tui` or `bun add -g beto-tui` work too — the binary still installs as `beto` (the npm name is suffixed because `beto` was already taken on the registry).
 
 ## Use
 
