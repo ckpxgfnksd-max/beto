@@ -1,0 +1,25 @@
+{
+  "$schema": "https://github.com/ckpxgfnksd-max/beto/blob/main/docs/manifest-spec.md",
+  "id": "opencode",
+  "displayName": "OpenCode",
+  "sigil": "P",
+  "color": "blueBright",
+  "binary": "opencode",
+  "pollMs": 2000,
+  "readBudgetMs": 1500,
+  "adapter": {
+    "kind": "sqlite-sessions-table",
+    "config": {
+      "dbPath": "~/.local/share/opencode/opencode.db",
+      "table": "session",
+      "fieldMap": {
+        "sessionId": "id",
+        "name": "title",
+        "lastTransitionAt": "time_updated",
+        "cwd": "directory"
+      },
+      "where": "time_archived IS NULL",
+      "limit": 100
+    }
+  }
+}
