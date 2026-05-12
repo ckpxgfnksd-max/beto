@@ -60,7 +60,7 @@ post-hoc.
 | Metric | Target @ 30 days | Why |
 |---|---|---|
 | GitHub stars | 100 | Validation that the inbox metaphor resonates |
-| `npm i -g beto` downloads | 250 | Real install friction is acceptable |
+| `npm i -g beto-tui` downloads | 250 | Real install friction is acceptable |
 | GitHub Issues opened by non-author | 5 | Reached users who care enough to file feedback |
 | Third-party manifest PRs | 1 | Spec serves anyone besides me |
 | abtop interop issue response | engaged / ignored | Strategic posture validated either way |
@@ -159,7 +159,7 @@ Every 7 days for the first month, regardless of metrics:
 - [ ] Release workflow succeeded, binaries uploaded
 - [ ] `curl -fsSL <install-url> | sh` works end-to-end from a
       fresh terminal on a fresh tmpdir
-- [ ] `npm publish` succeeded; `npm i -g beto` works
+- [ ] `npm publish` succeeded; `npm i -g beto-tui` works (binary on PATH = `beto`)
 - [ ] README.md on main is the v0.8 rewrite (not the draft)
 - [ ] (if posting abtop issue) interop issue is open on
       `graykode/abtop`
