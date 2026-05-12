@@ -13,6 +13,7 @@ Two tiers:
 |----------|--------------|------------------|
 | Claude Code *(built-in adapter, not via manifest)* | n/a | 122 real sessions on developer machine (2026-05-12) |
 | `codex.json` | `jsonl-index` | 16 real sessions in `~/.codex/session_index.jsonl` (2026-05-12) |
+| `opencode.json` | `sqlite-sessions-table` | `~/.local/share/opencode/opencode.db` schema confirmed against opencode-ai v1.14.48 (2026-05-12). `session` table (singular), `time_updated` in ms epoch. |
 
 ## Experimental (opt-in only)
 

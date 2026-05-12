@@ -18,6 +18,7 @@
 import type { EscalationTier, SessionSnapshot } from './types.js'
 import { deriveTier, formatBlockedFor } from './needsInput.js'
 import { groupRows } from '../store/inbox.js'
+import { sigilFor } from '../ui/theme.js'
 
 // SF symbols + Unicode glyphs. SwiftBar renders Unicode reliably; SF
 // symbols need extra config so we stick with plain Unicode for v0.7.
@@ -140,7 +141,15 @@ function buildTitle(needs: number, live: number, worstTier: EscalationTier | und
 }
 
 function formatRow(row: SessionSnapshot, statusTail: string, color = ''): string {
-  const sigil = HARNESS_SIGIL[row.harness] ?? row.harness.charAt(0).toUpperCase()
+  // Use the theme module's dynamic sigil lookup so plugin manifests'
+  // `sigil` overrides are honored. The local HARNESS_SIGIL fallback
+  // remains for built-in harnesses when theme registration hasn't run
+  // (e.g. unit tests that import this formatter directly).
+  const themeSigil = sigilFor(row.harness)
+  const sigil =
+    themeSigil && themeSigil !== row.harness.charAt(0).toUpperCase()
+      ? themeSigil
+      : HARNESS_SIGIL[row.harness] ?? themeSigil
   const tps =
     row.tokenRateLast60s != null && row.tokenRateLast60s > 0
       ? ` · ${row.tokenRateLast60s} tps`
