@@ -27,12 +27,10 @@ import { createHash } from 'node:crypto'
 import { ClaudeAdapter } from '../src/sources/state.js'
 import { DirectoryOfStateJsonAdapter } from '../src/sources/kinds/directoryOfStateJson.js'
 import { JsonlTailAdapter } from '../src/sources/kinds/jsonlTail.js'
+import { JsonlIndexAdapter } from '../src/sources/kinds/jsonlIndex.js'
 import { ProcessWatchOnlyAdapter } from '../src/sources/kinds/processWatchOnly.js'
 import { SqliteSessionsTableAdapter } from '../src/sources/kinds/sqliteSessionsTable.js'
 import type { Adapter } from '../src/sources/adapter.js'
-// Note: jsonl-index zero-write coverage lands in a follow-up after the
-// jsonl-index kind PR merges to main. Keeping this PR truly independent
-// per the v0.8 process constraint.
 
 // Run-time per test. Long enough for ≥2 poll cycles at the default
 // 2s cadence; short enough to keep total CI time under 30s for the
@@ -165,6 +163,23 @@ describe('zero-write invariant: no adapter writes inside the harness data dir', 
       config: {
         fileGlob: path.join(dir, '*.jsonl'),
         fieldMap: { sessionId: 'id', state: 't' },
+      },
+    })
+    await assertZeroWrite(adapter, dir)
+  })
+
+  it('JsonlIndexAdapter does not write inside the dir holding its index file', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'beto-zw-ji-'))
+    await fs.writeFile(
+      path.join(dir, 'session_index.jsonl'),
+      JSON.stringify({ id: 'a', name: 'A', updated_at: new Date().toISOString() }) + '\n',
+    )
+    const adapter = new JsonlIndexAdapter({
+      id: 'fake',
+      displayName: 'Fake',
+      config: {
+        filePath: path.join(dir, 'session_index.jsonl'),
+        fieldMap: { sessionId: 'id', name: 'name', lastTransitionAt: 'updated_at' },
       },
     })
     await assertZeroWrite(adapter, dir)
