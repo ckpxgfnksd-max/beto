@@ -1,7 +1,7 @@
 {
-  "name": "beto",
+  "name": "beto-tui",
   "version": "0.8.0",
-  "description": "Inbox for stuck AI coding agents. Surfaces sessions that need your input — Claude Code, Codex, OpenCode, and any harness with a plugin manifest.",
+  "description": "Inbox for stuck AI coding agents. Surfaces sessions that need your input — Claude Code, Codex, OpenCode, and any harness with a plugin manifest. CLI installs as `beto`.",
   "keywords": [
     "ai",
     "agents",
