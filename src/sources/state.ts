@@ -1,0 +1,288 @@
+// state.json reader. Ported from aggro/src-tauri/src/state_tailer.rs.
+//
+// `~/.claude/jobs/<id>/state.json` is the canonical "what is each Claude
+// Code session doing" file the supervisor maintains and `claude agents`
+// reads. v0 of beto reads only this source — no hook installation
+// required, zero install friction, works whether or not Claude Code is
+// running right now.
+//
+// Defensive parsing: every field except sessionId + state is best-effort.
+// Unknown fields are ignored; unknown state strings fall through to
+// 'unknown' so a future Claude Code release that adds a state never
+// drops a row.
+//
+// Polling: 2s. The Rust version used notify (kqueue/inotify) + 5s fallback;
+// 2s polling on a directory with <50 entries is fine for v0 and ships
+// cross-platform without a notify shim. Upgrade if we ever feel the lag.
+
+import { promises as fs } from 'node:fs'
+import * as path from 'node:path'
+import * as os from 'node:os'
+import type { SessionSnapshot, SessionState } from '../lib/types.js'
+
+// Working session with state.json mtime older than this is treated as dead
+// regardless of what the JSON says. The supervisor reaps idle processes
+// after ~1h; 5min keeps beto honest about stuck/dead working sessions.
+const STALE_WORKING_MS = 5 * 60 * 1000
+
+// Per-file cache: skip parse if mtime unchanged since last scan.
+interface FileCache {
+  mtimeMs: number
+  snapshot: SessionSnapshot
+}
+
+export interface StateReaderOptions {
+  // Override for testing. Defaults to ~/.claude/jobs/.
+  jobsDir?: string
+  // Override for testing. Defaults to Date.now.
+  now?: () => number
+  // Poll interval. Default 2000ms.
+  pollMs?: number
+}
+
+export class StateReader {
+  private readonly jobsDir: string
+  private readonly now: () => number
+  private readonly pollMs: number
+  private readonly cache = new Map<string, FileCache>()
+  private readonly listeners = new Set<(rows: SessionSnapshot[]) => void>()
+  private timer: NodeJS.Timeout | null = null
+  private lastEmitted: SessionSnapshot[] = []
+
+  constructor(opts: StateReaderOptions = {}) {
+    this.jobsDir = opts.jobsDir ?? path.join(os.homedir(), '.claude', 'jobs')
+    this.now = opts.now ?? (() => Date.now())
+    this.pollMs = opts.pollMs ?? 2000
+  }
+
+  // Start the polling loop. Fires the first scan immediately so the UI
+  // doesn't sit empty for 2s on launch.
+  start(): void {
+    if (this.timer) return
+    void this.scan()
+    this.timer = setInterval(() => {
+      void this.scan()
+    }, this.pollMs)
+  }
+
+  stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer)
+      this.timer = null
+    }
+  }
+
+  // Subscribe to scan results. The full list of snapshots is emitted on
+  // every scan that produces a change vs the prior emit. Returns an
+  // unsubscribe function.
+  onChange(fn: (rows: SessionSnapshot[]) => void): () => void {
+    this.listeners.add(fn)
+    if (this.lastEmitted.length > 0) fn(this.lastEmitted)
+    return () => {
+      this.listeners.delete(fn)
+    }
+  }
+
+  // One scan pass over ~/.claude/jobs/. Public for tests + manual ticks.
+  async scan(): Promise<SessionSnapshot[]> {
+    let entries: string[] = []
+    try {
+      entries = await fs.readdir(this.jobsDir)
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') {
+        // No jobs dir yet — no sessions ever dispatched. Idle silently.
+        return this.emit([])
+      }
+      // Permission / other errors: log to stderr but don't crash. The next
+      // scan will retry.
+      process.stderr.write(`beto: scan ${this.jobsDir} failed: ${String(e)}\n`)
+      return this.emit(this.lastEmitted)
+    }
+
+    const rows: SessionSnapshot[] = []
+    for (const id of entries) {
+      const filePath = path.join(this.jobsDir, id, 'state.json')
+      const row = await this.readOne(filePath)
+      if (row) rows.push(row)
+    }
+    // Stable sort: most recently transitioned first, then by sessionId.
+    rows.sort((a, b) => {
+      if (a.lastTransitionAt !== b.lastTransitionAt) {
+        return b.lastTransitionAt - a.lastTransitionAt
+      }
+      return a.sessionId.localeCompare(b.sessionId)
+    })
+    return this.emit(rows)
+  }
+
+  private async readOne(filePath: string): Promise<SessionSnapshot | null> {
+    let mtimeMs: number
+    try {
+      const stat = await fs.stat(filePath)
+      if (!stat.isFile()) return null
+      mtimeMs = stat.mtimeMs
+    } catch {
+      return null
+    }
+
+    const cached = this.cache.get(filePath)
+    if (cached && cached.mtimeMs === mtimeMs) return cached.snapshot
+
+    let json: unknown
+    try {
+      const raw = await fs.readFile(filePath, 'utf-8')
+      json = JSON.parse(raw)
+    } catch {
+      // Parse errors are common during atomic writes (file exists but is
+      // truncated mid-rewrite). Skip; the next poll picks up the rewrite.
+      return cached?.snapshot ?? null
+    }
+
+    const parsed = parseState(json, mtimeMs, this.now())
+    if (!parsed) return null
+
+    this.cache.set(filePath, { mtimeMs, snapshot: parsed })
+    return parsed
+  }
+
+  private emit(rows: SessionSnapshot[]): SessionSnapshot[] {
+    if (!shallowEqualRows(rows, this.lastEmitted)) {
+      this.lastEmitted = rows
+      for (const fn of this.listeners) fn(rows)
+    }
+    return rows
+  }
+}
+
+// Parse a state.json body into a snapshot. Returns null when the file
+// lacks a session id — we have nowhere to attach the row otherwise.
+// Field-name resolution is tolerant: snake_case + camelCase variants both
+// match. mtimeMs is the file mtime (for stale-working override + as a
+// fallback for lastTransitionAt when the JSON doesn't carry one).
+export function parseState(
+  json: unknown,
+  mtimeMs: number,
+  nowMs: number,
+): SessionSnapshot | null {
+  if (!json || typeof json !== 'object') return null
+  const obj = json as Record<string, unknown>
+
+  const sessionId = pickStr(obj, ['session_id', 'sessionId', 'id'])
+  if (!sessionId) return null
+
+  const rawState = pickStr(obj, ['state', 'status'])
+  let state = normalizeState(rawState)
+  const rawAlive = pickBool(obj, ['process_alive', 'processAlive', 'alive'], true)
+
+  // Stale-mtime override: working sessions whose file hasn't been touched
+  // in 5min are presumed reaped by the supervisor.
+  let processAlive = rawAlive
+  if (state === 'working' && mtimeMs > 0 && nowMs - mtimeMs >= STALE_WORKING_MS) {
+    state = 'stopped'
+    processAlive = false
+  }
+
+  const lastTransitionAt =
+    pickU64(obj, ['last_transition_at', 'lastTransitionAt', 'updated_at', 'updatedAt', 'mtime_ms']) ||
+    mtimeMs
+
+  const fallbackName = sessionId.length > 8 ? sessionId.slice(0, 8) : sessionId
+
+  return {
+    sessionId,
+    name: pickStr(obj, ['name', 'title']) || fallbackName,
+    state,
+    summary: pickStr(obj, ['summary', 'activity', 'description']),
+    lastTransitionAt,
+    processAlive,
+    prUrl: pickStr(obj, ['pr_url', 'prUrl', 'pull_request_url', 'pullRequestUrl']),
+    prCheckStatus: pickStr(obj, [
+      'pr_check_status',
+      'prCheckStatus',
+      'ci_status',
+      'ciStatus',
+      'checks_status',
+    ]),
+    cwd: pickStr(obj, ['cwd', 'working_directory', 'workingDirectory']),
+    rawStateString: rawState,
+  }
+}
+
+function pickStr(o: Record<string, unknown>, keys: readonly string[]): string {
+  for (const k of keys) {
+    const v = o[k]
+    if (typeof v === 'string') return v
+  }
+  return ''
+}
+
+function pickU64(o: Record<string, unknown>, keys: readonly string[]): number {
+  for (const k of keys) {
+    const v = o[k]
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v
+  }
+  return 0
+}
+
+function pickBool(o: Record<string, unknown>, keys: readonly string[], dflt: boolean): boolean {
+  for (const k of keys) {
+    const v = o[k]
+    if (typeof v === 'boolean') return v
+  }
+  return dflt
+}
+
+export function normalizeState(raw: string): SessionState {
+  const canon = raw.trim().toLowerCase().replace(/_/g, '-').replace(/ /g, '-')
+  switch (canon) {
+    case 'working':
+    case 'running':
+    case 'active':
+      return 'working'
+    case 'needs-input':
+    case 'needsinput':
+    case 'blocked':
+    case 'waiting-for-input':
+      return 'needs-input'
+    case 'idle':
+    case 'waiting':
+      return 'idle'
+    case 'completed':
+    case 'done':
+    case 'finished':
+    case 'success':
+      return 'completed'
+    case 'failed':
+    case 'error':
+    case 'errored':
+      return 'failed'
+    case 'stopped':
+    case 'killed':
+    case 'cancelled':
+    case 'canceled':
+      return 'stopped'
+    default:
+      return 'unknown'
+  }
+}
+
+function shallowEqualRows(a: SessionSnapshot[], b: SessionSnapshot[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!
+    const y = b[i]!
+    if (
+      x.sessionId !== y.sessionId ||
+      x.state !== y.state ||
+      x.summary !== y.summary ||
+      x.lastTransitionAt !== y.lastTransitionAt ||
+      x.processAlive !== y.processAlive ||
+      x.prUrl !== y.prUrl ||
+      x.prCheckStatus !== y.prCheckStatus
+    ) {
+      return false
+    }
+  }
+  return true
+}

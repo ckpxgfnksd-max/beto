@@ -1,0 +1,42 @@
+{
+  "name": "beto",
+  "version": "0.1.0",
+  "description": "A terminal inbox for Claude Code sessions. The needs-you channel for power users running 1-10 agents in parallel.",
+  "type": "module",
+  "bin": {
+    "beto": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "bun src/cli.tsx",
+    "build": "bun build src/cli.tsx --target=node --outfile=dist/cli.js --banner='#!/usr/bin/env node' && chmod +x dist/cli.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "seed": "bun scripts/seed-mock-jobs.ts"
+  },
+  "dependencies": {
+    "ink": "^5.0.1",
+    "ink-text-input": "^6.0.0",
+    "react": "^18.3.1",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.7.0",
+    "@types/react": "^18.3.0",
+    "ink-testing-library": "^4.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ckpxgfnksd-max/beto.git"
+  }
+}
