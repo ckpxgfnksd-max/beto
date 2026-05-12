@@ -61,6 +61,9 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
         <Text bold>{truncate(row.name, 10)}</Text>
         <Text color={colorFor(row.harness)}> {sigilFor(row.harness)}</Text>
         <Text color={row.state === 'needs-input' ? tierColor : stateColor}> {tierBit}</Text>
+        {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
+          <Text dimColor> · {row.tokenRateLast60s}tps</Text>
+        ) : null}
       </Box>
     )
   }
@@ -75,6 +78,9 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
         <Text color={colorFor(row.harness)} bold>{sigilFor(row.harness)} </Text>
         <Text dimColor>· </Text>
         <Text color={row.state === 'needs-input' ? tierColor : stateColor}>{tierBit}</Text>
+        {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
+          <Text dimColor>  · {row.tokenRateLast60s} tps</Text>
+        ) : null}
       </Box>
       {summary && (
         <Box paddingLeft={5}>

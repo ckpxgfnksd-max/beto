@@ -94,6 +94,7 @@ describe('StateReader', () => {
     const reader = new StateReader({
       jobsDir: '/nope/does/not/exist/' + Math.random(),
       now: () => 1,
+      readTranscripts: false,
     })
     const rows = await reader.scan()
     expect(rows).toEqual([])
@@ -111,7 +112,7 @@ describe('StateReader', () => {
       path.join(dir, 'b', 'state.json'),
       JSON.stringify({ session_id: 'b', state: 'working', last_transition_at: 200 }),
     )
-    const reader = new StateReader({ jobsDir: dir, now: () => 300 })
+    const reader = new StateReader({ jobsDir: dir, now: () => 300, readTranscripts: false })
     const rows = await reader.scan()
     expect(rows.map((r) => r.sessionId)).toEqual(['b', 'a'])
   })
@@ -123,7 +124,7 @@ describe('StateReader', () => {
       path.join(dir, 'a', 'state.json'),
       JSON.stringify({ session_id: 'a', state: 'idle' }),
     )
-    const reader = new StateReader({ jobsDir: dir, now: () => Date.now() })
+    const reader = new StateReader({ jobsDir: dir, now: () => Date.now(), readTranscripts: false })
     let received: unknown[] = []
     reader.onChange((rows) => {
       received = rows
@@ -136,8 +137,67 @@ describe('StateReader', () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'beto-test-'))
     await fs.mkdir(path.join(dir, 'broken'))
     await fs.writeFile(path.join(dir, 'broken', 'state.json'), '{not-json')
-    const reader = new StateReader({ jobsDir: dir, now: () => Date.now() })
+    const reader = new StateReader({ jobsDir: dir, now: () => Date.now(), readTranscripts: false })
     const rows = await reader.scan()
     expect(rows).toEqual([])
+  })
+
+  it('merges transcript tokens onto state.json rows when sessionIds match', async () => {
+    const NOW = 1_700_000_000_000
+    const jobsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'beto-jobs-'))
+    const projectsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'beto-proj-'))
+
+    // state.json says session "a" is working
+    await fs.mkdir(path.join(jobsDir, 'a'))
+    await fs.writeFile(
+      path.join(jobsDir, 'a', 'state.json'),
+      JSON.stringify({
+        session_id: 'a',
+        state: 'working',
+        last_transition_at: NOW - 5_000,
+      }),
+    )
+    // transcript for session "a" has token usage
+    const proj = path.join(projectsDir, '-proj')
+    await fs.mkdir(proj)
+    await fs.writeFile(
+      path.join(proj, 'a.jsonl'),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: new Date(NOW - 10_000).toISOString(),
+        message: { usage: { input_tokens: 600, output_tokens: 200 } },
+      }),
+    )
+
+    const reader = new StateReader({ jobsDir, projectsDir, now: () => NOW })
+    const rows = await reader.scan()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.sessionId).toBe('a')
+    expect(rows[0]!.state).toBe('working') // state.json wins
+    expect(rows[0]!.tokensIn).toBe(600)
+    expect(rows[0]!.tokensOut).toBe(200)
+    expect(rows[0]!.tokenRateLast60s).toBe(3) // 200 output / 60s ≈ 3
+  })
+
+  it('synthesizes sessions present only in transcripts (no state.json)', async () => {
+    const NOW = 1_700_000_000_000
+    const jobsDir = '/nope/no/jobs/' + Math.random()
+    const projectsDir = await fs.mkdtemp(path.join(os.tmpdir(), 'beto-proj-'))
+    const proj = path.join(projectsDir, '-proj')
+    await fs.mkdir(proj)
+    await fs.writeFile(
+      path.join(proj, 'foreground-sid.jsonl'),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: new Date(NOW - 5_000).toISOString(),
+        message: { usage: { input_tokens: 50, output_tokens: 20 } },
+      }),
+    )
+    const reader = new StateReader({ jobsDir, projectsDir, now: () => NOW })
+    const rows = await reader.scan()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.sessionId).toBe('foreground-sid')
+    expect(rows[0]!.state).toBe('working') // synthesized from recent activity
+    expect(rows[0]!.tokensIn).toBe(50)
   })
 })

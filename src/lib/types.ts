@@ -100,6 +100,15 @@ export interface SessionSnapshot {
   // Filled in by the reader after parsing; surfaces stale-mtime overrides
   // (5min+ idle working session → forced dead).
   rawStateString: string
+
+  // Token usage (v0.6+). Optional because not every harness exposes
+  // token data on disk. When set, `tokenRateLast60s` is tokens/sec
+  // averaged over the trailing 60-second window (in + out summed); 0
+  // for an idle session that has done no work recently. `tokensIn` and
+  // `tokensOut` are cumulative for the session.
+  tokensIn?: number
+  tokensOut?: number
+  tokenRateLast60s?: number
 }
 
 // Escalation tiers from aggro's needsInput.ts. Pure on inputs; same

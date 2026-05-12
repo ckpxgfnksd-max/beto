@@ -63,6 +63,9 @@ export function Row({ index, row, tier, now, cursor }: Props) {
         {tierLabel ? (
           <Text color={tierColor}> · {tierLabel}</Text>
         ) : null}
+        {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
+          <Text dimColor>  · {row.tokenRateLast60s} tps</Text>
+        ) : null}
         {row.prCheckStatus ? (
           <Text dimColor>  {prBadge(row.prCheckStatus)}</Text>
         ) : null}

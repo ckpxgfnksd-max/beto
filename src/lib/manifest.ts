@@ -74,6 +74,46 @@ export type AdapterConfig =
   | { kind: 'jsonl-tail'; config: JsonlTailConfig }
   | { kind: 'process-watch-only'; config: ProcessWatchOnlyConfig }
 
+// Optional token-source config for a manifest. When present, the plugin
+// loader will instantiate a TokenSource alongside the main adapter and
+// enrich every emitted SessionSnapshot with tokens. v0.6 ships the
+// `jsonl-transcript` source (Claude-style); future kinds plug in here.
+//
+// Field maps under `fieldMap` translate the harness's native usage keys
+// to beto's `input` / `output` axes. `messageType` selects which JSONL
+// record type carries usage (Claude uses `assistant`).
+export type TokenSourceConfig =
+  | {
+      kind: 'jsonl-transcript'
+      // Glob pattern matching transcript files. `<sessionId>` token in
+      // the path is replaced with each session's id at lookup time.
+      fileGlob: string
+      // Record-type filter (default `assistant`).
+      messageType?: string
+      // Field map from JSONL → beto. Defaults match Claude Code:
+      //   input:  message.usage.input_tokens
+      //   output: message.usage.output_tokens
+      //   timestamp: timestamp (ISO string)
+      fieldMap?: {
+        input?: string
+        output?: string
+        timestamp?: string
+      }
+    }
+  | {
+      kind: 'sqlite-usage-table'
+      dbPath: string
+      table: string
+      // Column names. `sessionId` is required; `input/output/timestamp`
+      // map to numeric / ISO-string columns the kind sums per session.
+      fieldMap: {
+        sessionId: string
+        input?: string
+        output?: string
+        timestamp?: string
+      }
+    }
+
 // The full manifest shape.
 export interface PluginManifest {
   // Unique slug; becomes the HarnessId. Lowercase + hyphens.
@@ -94,6 +134,11 @@ export interface PluginManifest {
   readBudgetMs?: number
   // Kind + kind-specific config — discriminated union.
   adapter: AdapterConfig
+  // Optional token source. When set, the plugin loader composes a
+  // TokenSource that enriches snapshots from this manifest's adapter
+  // with token counts + 60s tps. Not all adapter kinds have a useful
+  // token source — that's ok, the field is optional.
+  tokens?: TokenSourceConfig
 }
 
 // ─── Validation ──────────────────────────────────────────────────────

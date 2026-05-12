@@ -66,6 +66,18 @@ export function Peek({ row, now, replyFocused, onSubmitReply, flash }: Props) {
         </Box>
       )}
 
+      {(row.tokensIn != null || row.tokenRateLast60s != null) && (
+        <Box marginTop={1}>
+          <Text dimColor>Tokens: </Text>
+          <Text>
+            {fmt(row.tokensIn)} in · {fmt(row.tokensOut)} out
+          </Text>
+          {row.tokenRateLast60s != null ? (
+            <Text dimColor> · {row.tokenRateLast60s} tps (60s)</Text>
+          ) : null}
+        </Box>
+      )}
+
       {row.prUrl && (
         <Box marginTop={1}>
           <Text dimColor>PR: </Text>
@@ -106,4 +118,12 @@ export function Peek({ row, now, replyFocused, onSubmitReply, flash }: Props) {
       )}
     </Box>
   )
+}
+
+// Compact integer formatter — 1234 → "1.2k", 1234567 → "1.2M".
+function fmt(n: number | undefined): string {
+  if (n == null) return '0'
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k'
+  return (n / 1_000_000).toFixed(1) + 'M'
 }
