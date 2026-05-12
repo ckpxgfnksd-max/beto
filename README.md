@@ -38,17 +38,70 @@ Most observability tools answer "what did the agent do?" beto answers "should I 
 
 Each row carries a **harness sigil** so you can see at a glance whether the blocked session is Claude (`C`), Codex (`X`), Hermes (`H`), Goose (`G`), or any other. The three-tier escalation ramp (awaiting → escalated → abandoned) is universal — it doesn't care which provider the agent comes from.
 
-## What's wired today (v0.5)
+## What's wired today (v0.7)
 
+- **macOS menubar via SwiftBar** *(v0.7)* — `beto bar` emits a SwiftBar-format status bar with per-session name + harness sigil + time-in-state + TPS. Always visible at the top of your screen. See [SwiftBar menubar](#swiftbar-menubar) below.
+- **Token plumbing + TPS** *(v0.6)* — reads `~/.claude/projects/*/<sid>.jsonl`, sums input (incl. cache) + output tokens cumulatively, computes a 60s output-tokens-per-second rate. ClaudeAdapter also *synthesizes session rows from JSONL alone* when no `state.json` exists — covers foreground `claude` sessions.
 - **Universal sidebar UI** — single TUI that adapts from ultra-compact (<50 cols) → sidebar (50–80 cols) → wide (≥80 cols) based on terminal width.
 - **Harness-agnostic adapter pattern** — every provider plugs in behind a single `Adapter` interface; the store merges per-harness emissions into one flat list keyed by `<harness>:<sessionId>`.
-- **Layered auto-detection** — PATH probe + version exec + XDG-aware state-dir probe + process scan, fused into a status spectrum. Cached at `~/.beto/cache/detection.json` with a 1h TTL + mtime invalidation. Run `beto doctor` for the full matrix.
+- **Layered auto-detection** — PATH probe + version exec + XDG-aware state-dir probe + process scan. Run `beto doctor` for the full matrix.
 - **Startup banner** — every launch prints one line: `beto detected: ○ Claude Code 2.1.x · ○ Codex · backends: ollama`.
-- **Plugin manifest schema** — drop a `*.json` into `~/.beto/plugins/` and beto auto-registers an adapter on next launch. Five reference manifests ship in `manifests/` (Codex, Hermes, Goose, Aider, Open Interpreter).
-- **Four built-in adapter kinds:** `directory-of-state-json` · `sqlite-sessions-table` (shells out to `sqlite3` CLI) · `jsonl-tail` · `process-watch-only`.
-- **OS notifications on `needs-input` transitions** — *(v0.5)* macOS `osascript display notification` / Linux `notify-send`. Per-session throttle (30s default) so a flickering blocked-status doesn't spam. Sound off by default. Turn off with `--no-notifications` or `notifications.enabled: false` in `~/.beto/config.json`.
-- **Built-in Claude adapter** — the canonical first-party harness with a working commander layer (dispatch / attach / reply via clipboard). Other harnesses are read-only via plugins for now.
+- **Plugin manifest schema** — drop a `*.json` into `~/.beto/plugins/` and beto auto-registers an adapter on next launch. Five reference manifests ship in `manifests/`.
+- **Four built-in adapter kinds:** `directory-of-state-json` · `sqlite-sessions-table` · `jsonl-tail` · `process-watch-only`.
+- **OS notifications on `needs-input` transitions** — macOS `osascript display notification` / Linux `notify-send`. Per-session 30s throttle.
+- **Built-in Claude adapter** — Claude Code is the canonical first-party harness with a working commander layer (dispatch / attach / reply via clipboard).
 - **Harness filter** — press `f` to cycle.
+
+## SwiftBar menubar
+
+The most useful surface beto has — a live status item at the top of your macOS screen showing every working agent, its state, and tokens/sec, refreshing every 30 seconds.
+
+**Install:**
+
+```sh
+# 1. Install SwiftBar (free, open source)
+brew install --cask swiftbar
+# Open SwiftBar.app once and grant it a plugin folder
+# (defaults to ~/Library/Application Support/SwiftBar/Plugins)
+
+# 2. Symlink the beto SwiftBar plugin into that folder
+ln -s "$(pwd)/bin/beto.30s.sh" \
+      ~/Library/Application\ Support/SwiftBar/Plugins/beto.30s.sh
+
+# 3. Make sure `beto` is on PATH (or set BETO_PATH in your shell rc)
+which beto || (bun link && which beto)
+
+# 4. Click SwiftBar's "Refresh" — your menubar now shows live agent status.
+```
+
+The filename's `30s` suffix controls refresh cadence. Rename to `beto.10s.sh` for tighter polling, `beto.5m.sh` for relaxed.
+
+**What you see in the menubar:**
+
+```
+⚠ 2 (escalated) · ● 3 live          ← title, always visible
+─────────────
+NEEDS YOU (2)
+◉ Quasar  C · escalated 2m 14s · 0 tps
+◉ Nebula  X · awaiting 25s · 0 tps
+─────────────
+ACTIVE (3)
+● Vega    C · working 14m · 38 tps
+● Rigel   X · working 2m · 27 tps
+● Altair  G · working 8s · 19 tps
+─────────────
+RECENT
+✓ Cygnus  C · PR ready
+✗ Orion   H · failed
+─────────────
+Open beto inbox →
+Open beto doctor →
+Refresh
+```
+
+Title color: red if any session is `escalated`/`abandoned`, orange for `awaiting`, gray when nothing needs you. Click any row to drill into the full beto inbox in a Terminal.
+
+If beto isn't on PATH, the plugin shows `beto · install needed` and points to the source repo. Set `BETO_PATH` in your shell rc (e.g. `export BETO_PATH=/opt/homebrew/bin/beto`) to override.
 
 ## Plugin manifests
 
@@ -112,10 +165,12 @@ Field maps may not match the real on-disk schemas exactly — see `manifests/REA
 | v0.2    | ✓      | Universal sidebar UI · adapter pattern · multi-harness mock              |
 | v0.2.1  | ✓      | Layered auto-detection (PATH + state-dir + process scan) · `beto doctor` |
 | v0.3    | ✓      | Plugin manifest schema · 4 adapter kinds · 5 reference manifests          |
-| v0.5 *(now)* | ✓ | Desktop notifications on `needs-input` transitions (macOS + Linux)         |
-| v0.4    |        | Verified field-maps via real-install testing                              |
-| v0.6+   |        | Per-harness commander layer (dispatch/attach/reply beyond Claude)         |
-| v1.0    |        | macOS menubar UI · published to npm                                       |
+| v0.5    | ✓      | Desktop notifications on `needs-input` transitions (macOS + Linux)         |
+| v0.6    | ✓      | Token plumbing · TPS · JSONL session synthesis · cumulative usage          |
+| v0.7 *(now)* | ✓ | **macOS menubar via SwiftBar** · `beto bar` subcommand                   |
+| v0.8+   |        | Better session names (first user message / project-dir decode)            |
+| v0.9+   |        | Verified field-maps on real Hermes/Goose/Codex installs                   |
+| v1.0    |        | Native Swift menubar app (drop SwiftBar dependency) · published to npm    |
 
 After v0.3, growth is mostly community manifests — anyone can extend beto without forking.
 

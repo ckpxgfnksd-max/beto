@@ -28,8 +28,9 @@ import { detect } from './lib/detect.js'
 import { printBanner, printDoctor } from './lib/doctor.js'
 import { loadPlugins } from './lib/plugins.js'
 import { NotificationManager } from './lib/notifications.js'
+import { renderSwiftBar } from './lib/swiftbar.js'
 import { fileURLToPath } from 'node:url'
-import { HARNESS_IDS, type HarnessId } from './lib/types.js'
+import { HARNESS_IDS, type HarnessId, type SessionSnapshot } from './lib/types.js'
 
 const args = process.argv.slice(2)
 
@@ -39,12 +40,45 @@ function arg(name: string): string | undefined {
   return args[i + 1]
 }
 
+// One-shot scan helper. Builds the registry from config + plugin
+// manifests, lets each adapter complete its first scan, then resolves
+// with the merged rows. Used by `beto bar` (SwiftBar) and any future
+// scriptable subcommand that doesn't want the long-running Ink app.
+async function scanOnce(timeoutMs = 1500): Promise<SessionSnapshot[]> {
+  const cfg = await loadOrInitConfig()
+  const reg = new HarnessRegistry()
+
+  const bundledDir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'manifests',
+  )
+  const pluginResult = await loadPlugins({ extraDirs: [bundledDir] })
+  for (const plugin of pluginResult.loaded) reg.add(plugin.adapter)
+  if (cfg.harnesses.claude?.enabled) {
+    reg.add(new ClaudeAdapter({ jobsDir: cfg.harnesses.claude.path }))
+  }
+
+  return new Promise<SessionSnapshot[]>((resolve) => {
+    let latest: SessionSnapshot[] = []
+    const unsub = reg.onChange((rows) => {
+      latest = rows
+    })
+    reg.start()
+    setTimeout(() => {
+      unsub()
+      reg.stop()
+      resolve(latest)
+    }, timeoutMs)
+  })
+}
+
 if (args.includes('--help') || args.includes('-h')) {
   process.stdout.write(usage())
   process.exit(0)
 }
 if (args.includes('--version') || args.includes('-V')) {
-  process.stdout.write('beto 0.6.0\n')
+  process.stdout.write('beto 0.7.0\n')
   process.exit(0)
 }
 
@@ -58,6 +92,23 @@ if (args[0] === 'doctor') {
   const useCache = !args.includes('--no-cache')
   const report = await detect({ useCache })
   printDoctor(report)
+  process.exit(0)
+}
+
+// Subcommand: `beto bar` prints SwiftBar-format markdown to stdout and
+// exits. The SwiftBar plugin file (bin/beto.30s.sh) shells into this.
+//
+// Builds the registry from ~/.beto/config.json + bundled manifests, runs
+// every adapter for ~1.5s so they emit their first snapshot, formats,
+// exits. No Ink, no polling — pure scan-and-print.
+if (args[0] === 'bar') {
+  const rows = await scanOnce()
+  // Path used in the dropdown's "Open inbox" / "Open doctor" actions.
+  // Default to the bare command name (assumes `beto` is on PATH after
+  // `bun link` / `bun add -g`). $BETO_PATH overrides when users have
+  // an unusual install layout.
+  const betoPath = process.env.BETO_PATH ?? 'beto'
+  process.stdout.write(renderSwiftBar(rows, { betoPath }))
   process.exit(0)
 }
 
@@ -179,6 +230,7 @@ function usage(): string {
 
 Usage:
   beto                          launch (reads ~/.beto/config.json)
+  beto bar                      emit SwiftBar markdown to stdout (and exit)
   beto doctor [--no-cache]      print the detection matrix and exit
   beto --jobs-dir <path>        single-harness, Claude jobs dir override
   beto --mock-dir <path>        multi-harness mock mode (.tmp/jobs-*/)
