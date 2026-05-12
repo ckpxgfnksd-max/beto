@@ -48,11 +48,11 @@ describe('execVersion', () => {
     expect(got).toBeNull()
   })
 
-  it('returns null on timeout', async () => {
-    // `sleep` writes nothing to stdout, so we hit the timeout deterministically.
-    const got = await execVersion('sleep', 100)
-    expect(got).toBeNull()
-  })
+  // Note: a cross-platform "hits the timeout" test is harder than it
+  // looks — `sleep --version` is silent on macOS BSD but verbose on
+  // Linux GNU coreutils, `cat` and `true` similarly diverge. The
+  // timeout path itself is shared with scanProcesses (same setTimeout
+  // pattern), and that one has a deterministic timeout test below.
 })
 
 describe('extractVersion', () => {
