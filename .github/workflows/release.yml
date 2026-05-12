@@ -1,0 +1,50 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.8.0). Defaults to the current ref.'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Cross-compile release binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      # Build all three target binaries in a single Bun pass.
+      - name: Cross-compile
+        run: bun scripts/build-release.ts
+      - name: Inspect output
+        run: |
+          ls -la dist-release/
+          echo "--- SHA256SUMS ---"
+          cat dist-release/SHA256SUMS
+      # Smoke-test the Linux binary against its own runtime since we
+      # built it here. macOS targets get smoke-tested when a user runs
+      # the installer — we can't easily run a darwin binary on linux CI.
+      - name: Smoke test linux-x64 binary
+        run: |
+          ./dist-release/beto-linux-x64 --version
+          ./dist-release/beto-linux-x64 doctor --no-cache | head -3
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            dist-release/beto-darwin-arm64
+            dist-release/beto-darwin-x64
+            dist-release/beto-linux-x64
+            dist-release/SHA256SUMS
+            scripts/install.sh
+          fail_on_unmatched_files: true
+          generate_release_notes: true
