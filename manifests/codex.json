@@ -1,0 +1,27 @@
+{
+  "$schema": "https://github.com/ckpxgfnksd-max/beto/blob/main/manifest.schema.json",
+  "id": "codex",
+  "displayName": "Codex",
+  "sigil": "X",
+  "color": "green",
+  "binary": "codex",
+  "pollMs": 2000,
+  "readBudgetMs": 1500,
+  "adapter": {
+    "kind": "directory-of-state-json",
+    "config": {
+      "stateDirs": [
+        "~/.codex/sessions",
+        "~/.local/share/codex/sessions"
+      ],
+      "fieldMap": {
+        "sessionId": "id",
+        "name": "title",
+        "state": "status",
+        "summary": "current_summary",
+        "lastTransitionAt": "updated_at_ms",
+        "cwd": "cwd"
+      }
+    }
+  }
+}

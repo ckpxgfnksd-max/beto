@@ -13,6 +13,7 @@ import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import * as os from 'node:os'
 import { HARNESS_IDS, type HarnessId } from './types.js'
+import { detect, type DetectionReport } from './detect.js'
 
 export interface HarnessConfig {
   enabled: boolean
@@ -21,8 +22,16 @@ export interface HarnessConfig {
   path?: string
 }
 
+export interface NotificationsConfig {
+  // Master switch. When unset, defaults to true on macOS/Linux.
+  enabled: boolean
+  // Audible cue on each notification. Default false.
+  sound: boolean
+}
+
 export interface BetoConfig {
   harnesses: Record<HarnessId, HarnessConfig>
+  notifications?: NotificationsConfig
   version: 1
 }
 
@@ -30,7 +39,9 @@ const CONFIG_VERSION: 1 = 1
 
 // Canonical home-relative path each adapter looks at by default. v0.2 only
 // reads `~/.claude/`; the other entries are presence-probes for the
-// auto-detect logic.
+// auto-detect logic. v0.2.1 prefers the richer detect.ts probe (PATH +
+// state-dir + process scan), but keeps these as a fallback for cases
+// where detect.ts can't run (e.g., no PATH).
 const DEFAULT_PATHS: Record<HarnessId, string> = {
   claude: '.claude/jobs',
   codex: '.codex',
@@ -40,6 +51,9 @@ const DEFAULT_PATHS: Record<HarnessId, string> = {
   openclaw: '.openclaw',
   openhands: '.openhands',
   aider: '', // per-repo, not centralized
+  'open-interpreter': '.config/open-interpreter',
+  crewai: '.crewai',
+  metagpt: '.metagpt',
 }
 
 export interface ConfigPaths {
@@ -73,7 +87,7 @@ export async function loadOrInitConfig(p?: ConfigPaths): Promise<BetoConfig> {
       return cfg
     }
     process.stderr.write(`beto: config ${file} unreadable (${String(e)}); using defaults\n`)
-    return mergeWithDefaults({ harnesses: { claude: { enabled: true } } } as BetoConfig)
+    return mergeWithDefaults({})
   }
 }
 
@@ -83,26 +97,41 @@ export async function writeConfig(cfg: BetoConfig, p?: ConfigPaths): Promise<voi
   await fs.writeFile(file, JSON.stringify(cfg, null, 2) + '\n')
 }
 
-// Build a config by probing for each harness's home directory. Present →
-// enabled, absent → disabled. Aider always disabled in auto-detect because
-// it's per-repo and has no central state to read in v0.2.
+// Build a config by probing for each harness. v0.2.1: prefers the rich
+// layered detector (PATH + state-dir + process scan) and falls back to
+// the simple state-dir probe if detection fails. A harness is enabled
+// when status is anything except 'absent' — installed-but-no-state still
+// counts so the row sigil is reserved and the user sees the slot.
 export async function autoDetect(p?: ConfigPaths): Promise<BetoConfig> {
   const home = homeDir(p)
   const harnesses: Partial<Record<HarnessId, HarnessConfig>> = {}
-  for (const id of HARNESS_IDS) {
-    const rel = DEFAULT_PATHS[id]
-    if (!rel) {
-      harnesses[id] = { enabled: false }
-      continue
-    }
-    const candidate = path.join(home, rel)
-    const exists = await pathExists(candidate)
-    // v0.2 only the claude adapter actually reads a path. For others, the
-    // 'enabled' flag is reserved for v0.3+; until then, even an enabled
-    // codex entry simply means "I'd want it on, no adapter yet."
-    harnesses[id] = { enabled: exists }
+
+  let report: DetectionReport | null = null
+  try {
+    report = await detect({ home })
+  } catch {
+    // Detection is best-effort; fall through to the simple probe below.
   }
-  return { version: CONFIG_VERSION, harnesses: harnesses as Record<HarnessId, HarnessConfig> }
+
+  for (const id of HARNESS_IDS) {
+    if (report) {
+      const detected = report.harnesses.find((h) => h.id === id)
+      const enabled = !!detected && detected.status !== 'absent'
+      const cfg: HarnessConfig = { enabled }
+      if (detected?.stateDir) cfg.path = detected.stateDir
+      harnesses[id] = cfg
+    } else {
+      const rel = DEFAULT_PATHS[id]
+      const candidate = rel ? path.join(home, rel) : ''
+      const exists = rel ? await pathExists(candidate) : false
+      harnesses[id] = { enabled: exists }
+    }
+  }
+  return {
+    version: CONFIG_VERSION,
+    harnesses: harnesses as Record<HarnessId, HarnessConfig>,
+    notifications: defaultNotifications(),
+  }
 }
 
 function mergeWithDefaults(cfg: Partial<BetoConfig>): BetoConfig {
@@ -110,7 +139,20 @@ function mergeWithDefaults(cfg: Partial<BetoConfig>): BetoConfig {
   for (const id of HARNESS_IDS) {
     harnesses[id] = cfg.harnesses?.[id] ?? { enabled: id === 'claude' }
   }
-  return { version: CONFIG_VERSION, harnesses: harnesses as Record<HarnessId, HarnessConfig> }
+  return {
+    version: CONFIG_VERSION,
+    harnesses: harnesses as Record<HarnessId, HarnessConfig>,
+    notifications: cfg.notifications ?? defaultNotifications(),
+  }
+}
+
+function defaultNotifications(): NotificationsConfig {
+  // Enable on platforms where the OS notification path exists; let
+  // users on Windows opt-in via config edit when they want it.
+  return {
+    enabled: process.platform === 'darwin' || process.platform === 'linux',
+    sound: false,
+  }
 }
 
 async function pathExists(p: string): Promise<boolean> {

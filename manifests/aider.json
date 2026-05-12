@@ -1,0 +1,16 @@
+{
+  "$schema": "https://github.com/ckpxgfnksd-max/beto/blob/main/manifest.schema.json",
+  "id": "aider",
+  "displayName": "Aider",
+  "sigil": "A",
+  "color": "gray",
+  "binary": "aider",
+  "pollMs": 3000,
+  "readBudgetMs": 1500,
+  "adapter": {
+    "kind": "process-watch-only",
+    "config": {
+      "stateOnRunning": "working"
+    }
+  }
+}

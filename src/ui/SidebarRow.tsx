@@ -2,8 +2,8 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { EscalationTier, SessionSnapshot } from '../lib/types.js'
 import {
-  HARNESS_COLOR,
-  HARNESS_SIGIL,
+  colorFor,
+  sigilFor,
   STATE_COLOR,
   STATE_GLYPH,
   TIER_COLOR,
@@ -59,8 +59,11 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
         <Text dimColor>[{slot}] </Text>
         <Text color={stateColor}>{STATE_GLYPH[row.state]} </Text>
         <Text bold>{truncate(row.name, 10)}</Text>
-        <Text color={HARNESS_COLOR[row.harness]}> {HARNESS_SIGIL[row.harness]}</Text>
+        <Text color={colorFor(row.harness)}> {sigilFor(row.harness)}</Text>
         <Text color={row.state === 'needs-input' ? tierColor : stateColor}> {tierBit}</Text>
+        {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
+          <Text dimColor> · {row.tokenRateLast60s}tps</Text>
+        ) : null}
       </Box>
     )
   }
@@ -72,9 +75,12 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
         <Text dimColor>[{slot}] </Text>
         <Text color={stateColor}>{STATE_GLYPH[row.state]} </Text>
         <Text bold>{truncate(row.name, 14).padEnd(14)}</Text>
-        <Text color={HARNESS_COLOR[row.harness]} bold>{HARNESS_SIGIL[row.harness]} </Text>
+        <Text color={colorFor(row.harness)} bold>{sigilFor(row.harness)} </Text>
         <Text dimColor>· </Text>
         <Text color={row.state === 'needs-input' ? tierColor : stateColor}>{tierBit}</Text>
+        {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
+          <Text dimColor>  · {row.tokenRateLast60s} tps</Text>
+        ) : null}
       </Box>
       {summary && (
         <Box paddingLeft={5}>

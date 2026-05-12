@@ -3,8 +3,8 @@ import { Box, Text } from 'ink'
 import type { EscalationTier, SessionSnapshot } from '../lib/types.js'
 import { inferRole, ROLE_GLYPH, ROLE_SHORT } from '../lib/roles.js'
 import {
-  HARNESS_COLOR,
-  HARNESS_SIGIL,
+  colorFor,
+  sigilFor,
   STATE_COLOR,
   STATE_GLYPH,
   TIER_COLOR,
@@ -57,11 +57,14 @@ export function Row({ index, row, tier, now, cursor }: Props) {
         <Text dimColor>[{slot}] </Text>
         <Text color={stateColor}>{STATE_GLYPH[row.state]} </Text>
         <Text bold>{row.name}</Text>
-        <Text color={HARNESS_COLOR[row.harness]} bold> {HARNESS_SIGIL[row.harness]}</Text>
+        <Text color={colorFor(row.harness)} bold> {sigilFor(row.harness)}</Text>
         <Text dimColor> ({ROLE_GLYPH[role]} {ROLE_SHORT[role]}) </Text>
         <Text color={stateColor}>· {statusLine}</Text>
         {tierLabel ? (
           <Text color={tierColor}> · {tierLabel}</Text>
+        ) : null}
+        {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
+          <Text dimColor>  · {row.tokenRateLast60s} tps</Text>
         ) : null}
         {row.prCheckStatus ? (
           <Text dimColor>  {prBadge(row.prCheckStatus)}</Text>

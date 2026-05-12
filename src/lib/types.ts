@@ -10,12 +10,14 @@ export type SessionState =
   | 'stopped'
   | 'unknown'
 
-// Closed set of agent harnesses beto knows how to surface. Each id maps to
-// an Adapter implementation in src/sources/. v0.2 ships only the 'claude'
-// adapter; the rest are reserved so the UI can render rows from a mock
-// adapter against any id and v0.3+ can land real adapters one at a time
-// without touching the union.
-export type HarnessId =
+// Harness ids are open as of v0.3: built-ins below, plus any id declared
+// in a user-installed manifest at ~/.beto/plugins/*.json. The closed
+// `BuiltInHarnessId` union still anchors detection probes + theme defaults;
+// unknown ids fall back to manifest-supplied sigil/color or generic
+// defaults.
+export type HarnessId = string
+
+export type BuiltInHarnessId =
   | 'claude'
   | 'codex'
   | 'hermes'
@@ -24,8 +26,11 @@ export type HarnessId =
   | 'openclaw'
   | 'openhands'
   | 'aider'
+  | 'open-interpreter'
+  | 'crewai'
+  | 'metagpt'
 
-export const HARNESS_IDS: readonly HarnessId[] = [
+export const BUILT_IN_HARNESS_IDS: readonly BuiltInHarnessId[] = [
   'claude',
   'codex',
   'hermes',
@@ -34,6 +39,39 @@ export const HARNESS_IDS: readonly HarnessId[] = [
   'openclaw',
   'openhands',
   'aider',
+  'open-interpreter',
+  'crewai',
+  'metagpt',
+] as const
+
+// Back-compat: code that wants the built-in list often imported HARNESS_IDS.
+export const HARNESS_IDS = BUILT_IN_HARNESS_IDS
+
+export function isBuiltInHarness(id: HarnessId): id is BuiltInHarnessId {
+  return (BUILT_IN_HARNESS_IDS as readonly string[]).includes(id)
+}
+
+// Local inference daemons we detect *informationally*. Not harnesses —
+// they don't host agent sessions — but their presence is a signal that
+// the user runs local models, so beto doctor surfaces them with a hint
+// about registering an agent that uses them via the plugin schema.
+export type InferenceBackendId =
+  | 'ollama'
+  | 'vllm'
+  | 'llama-server'
+  | 'lmstudio'
+  | 'litellm'
+  | 'tgi'
+  | 'huggingface-cli'
+
+export const INFERENCE_BACKEND_IDS: readonly InferenceBackendId[] = [
+  'ollama',
+  'vllm',
+  'llama-server',
+  'lmstudio',
+  'litellm',
+  'tgi',
+  'huggingface-cli',
 ] as const
 
 // The minimum-viable row beto renders. Ported from aggro's StateSnapshot
@@ -62,6 +100,15 @@ export interface SessionSnapshot {
   // Filled in by the reader after parsing; surfaces stale-mtime overrides
   // (5min+ idle working session → forced dead).
   rawStateString: string
+
+  // Token usage (v0.6+). Optional because not every harness exposes
+  // token data on disk. When set, `tokenRateLast60s` is tokens/sec
+  // averaged over the trailing 60-second window (in + out summed); 0
+  // for an idle session that has done no work recently. `tokensIn` and
+  // `tokensOut` are cumulative for the session.
+  tokensIn?: number
+  tokensOut?: number
+  tokenRateLast60s?: number
 }
 
 // Escalation tiers from aggro's needsInput.ts. Pure on inputs; same

@@ -24,7 +24,13 @@ import { ClaudeAdapter } from './sources/state.js'
 import { MockAdapter } from './sources/mockAdapter.js'
 import { HarnessRegistry } from './sources/adapter.js'
 import { loadOrInitConfig } from './lib/config.js'
-import { HARNESS_IDS, type HarnessId } from './lib/types.js'
+import { detect } from './lib/detect.js'
+import { printBanner, printDoctor } from './lib/doctor.js'
+import { loadPlugins } from './lib/plugins.js'
+import { NotificationManager } from './lib/notifications.js'
+import { renderSwiftBar } from './lib/swiftbar.js'
+import { fileURLToPath } from 'node:url'
+import { HARNESS_IDS, type HarnessId, type SessionSnapshot } from './lib/types.js'
 
 const args = process.argv.slice(2)
 
@@ -34,12 +40,75 @@ function arg(name: string): string | undefined {
   return args[i + 1]
 }
 
+// One-shot scan helper. Builds the registry from config + plugin
+// manifests, lets each adapter complete its first scan, then resolves
+// with the merged rows. Used by `beto bar` (SwiftBar) and any future
+// scriptable subcommand that doesn't want the long-running Ink app.
+async function scanOnce(timeoutMs = 1500): Promise<SessionSnapshot[]> {
+  const cfg = await loadOrInitConfig()
+  const reg = new HarnessRegistry()
+
+  const bundledDir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'manifests',
+  )
+  const pluginResult = await loadPlugins({ extraDirs: [bundledDir] })
+  for (const plugin of pluginResult.loaded) reg.add(plugin.adapter)
+  if (cfg.harnesses.claude?.enabled) {
+    reg.add(new ClaudeAdapter({ jobsDir: cfg.harnesses.claude.path }))
+  }
+
+  return new Promise<SessionSnapshot[]>((resolve) => {
+    let latest: SessionSnapshot[] = []
+    const unsub = reg.onChange((rows) => {
+      latest = rows
+    })
+    reg.start()
+    setTimeout(() => {
+      unsub()
+      reg.stop()
+      resolve(latest)
+    }, timeoutMs)
+  })
+}
+
 if (args.includes('--help') || args.includes('-h')) {
   process.stdout.write(usage())
   process.exit(0)
 }
 if (args.includes('--version') || args.includes('-V')) {
-  process.stdout.write('beto 0.2.0\n')
+  process.stdout.write('beto 0.7.0\n')
+  process.exit(0)
+}
+
+// --no-notifications disables OS notifications for the session. Useful
+// for screen-recording, screencasts, focused work blocks, etc.
+const notificationsDisabledByFlag = args.includes('--no-notifications')
+
+// Subcommand: `beto doctor` prints the detection matrix and exits.
+// Accepts --no-cache to force a fresh probe.
+if (args[0] === 'doctor') {
+  const useCache = !args.includes('--no-cache')
+  const report = await detect({ useCache })
+  printDoctor(report)
+  process.exit(0)
+}
+
+// Subcommand: `beto bar` prints SwiftBar-format markdown to stdout and
+// exits. The SwiftBar plugin file (bin/beto.30s.sh) shells into this.
+//
+// Builds the registry from ~/.beto/config.json + bundled manifests, runs
+// every adapter for ~1.5s so they emit their first snapshot, formats,
+// exits. No Ink, no polling — pure scan-and-print.
+if (args[0] === 'bar') {
+  const rows = await scanOnce()
+  // Path used in the dropdown's "Open inbox" / "Open doctor" actions.
+  // Default to the bare command name (assumes `beto` is on PATH after
+  // `bun link` / `bun add -g`). $BETO_PATH overrides when users have
+  // an unusual install layout.
+  const betoPath = process.env.BETO_PATH ?? 'beto'
+  process.stdout.write(renderSwiftBar(rows, { betoPath }))
   process.exit(0)
 }
 
@@ -48,12 +117,18 @@ const mockDir = arg('mock-dir')
 const harnessOverride = arg('harness') as HarnessId | undefined
 const pollMs = arg('poll') ? Number(arg('poll')) : undefined
 
-if (harnessOverride && !HARNESS_IDS.includes(harnessOverride)) {
-  process.stderr.write(`beto: unknown harness '${harnessOverride}'. valid: ${HARNESS_IDS.join(', ')}\n`)
-  process.exit(2)
+if (harnessOverride && !(HARNESS_IDS as readonly string[]).includes(harnessOverride)) {
+  // Could still be a valid plugin-registered id. Warn but proceed.
+  process.stderr.write(
+    `beto: '${harnessOverride}' not a built-in harness; assuming it's a plugin id\n`,
+  )
 }
 
 const registry = new HarnessRegistry()
+// Build the notifier eagerly so both mock-dir and normal paths get it.
+// The actual enabled state is resolved below — config can override.
+let notifierEnabled = !notificationsDisabledByFlag
+let notifierSound = false
 
 if (mockDir) {
   // Multi-harness mock mode: one MockAdapter per .tmp/jobs-<harness>/
@@ -62,7 +137,7 @@ if (mockDir) {
   for (const ent of entries) {
     if (!ent.isDirectory() || !ent.name.startsWith('jobs-')) continue
     const id = ent.name.slice(5) as HarnessId
-    if (!HARNESS_IDS.includes(id)) continue
+    if (!(HARNESS_IDS as readonly string[]).includes(id)) continue
     registry.add(
       new MockAdapter({
         id,
@@ -87,28 +162,63 @@ if (mockDir) {
     }),
   )
 } else {
-  // Normal launch: load (or initialize) ~/.beto/config.json and start
-  // every enabled adapter. v0.2 only the claude adapter actually reads
-  // a path; future v0.3 wires the rest.
+  // Normal launch: detect → banner → config → plugins → built-in Claude.
   const cfg = await loadOrInitConfig()
-  const enabled = (Object.entries(cfg.harnesses) as Array<[HarnessId, { enabled: boolean; path?: string }]>)
-    .filter(([id, h]) => h.enabled && (!harnessOverride || id === harnessOverride))
+  const detectionReport = await detect()
+  printBanner(detectionReport)
 
-  for (const [id, h] of enabled) {
-    if (id === 'claude') {
-      registry.add(
-        new ClaudeAdapter({
-          jobsDir: h.path,
-          pollMs: pollMs && pollMs > 0 ? pollMs : undefined,
-        }),
-      )
+  // Load plugins from ~/.beto/plugins/ + the manifests/ directory shipped
+  // with this repo (so first-time users get reference adapters without a
+  // separate install). User-installed manifests take precedence on id
+  // collisions.
+  const bundledDir = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    '..',
+    'manifests',
+  )
+  const pluginResult = await loadPlugins({ extraDirs: [bundledDir] })
+  for (const plugin of pluginResult.loaded) {
+    // If a non-Claude harness is plugin-backed and the user explicitly
+    // restricted via --harness, respect that filter.
+    if (harnessOverride && plugin.manifest.id !== harnessOverride) continue
+    registry.add(plugin.adapter)
+  }
+  if (pluginResult.failures.length > 0) {
+    for (const f of pluginResult.failures) {
+      process.stderr.write(`beto: skipped manifest ${f.sourcePath}: `)
+      if (typeof f.errors === 'string') {
+        process.stderr.write(f.errors + '\n')
+      } else {
+        process.stderr.write(f.errors.map((e) => `${e.path}: ${e.message}`).join('; ') + '\n')
+      }
     }
-    // Other harnesses fall through silently in v0.2 — the slot is
-    // reserved but the adapter lands in v0.3+.
+  }
+
+  // The built-in Claude adapter still wires up directly (not via
+  // manifest) — it's the canonical first-party harness and the only one
+  // with a working dispatch/attach/reply commander layer in v0.3.
+  if (cfg.harnesses.claude?.enabled && (!harnessOverride || harnessOverride === 'claude')) {
+    registry.add(
+      new ClaudeAdapter({
+        jobsDir: cfg.harnesses.claude.path,
+        pollMs: pollMs && pollMs > 0 ? pollMs : undefined,
+      }),
+    )
+  }
+
+  // Notifications config from ~/.beto/config.json. CLI flag wins if set.
+  if (cfg.notifications) {
+    if (!notificationsDisabledByFlag) notifierEnabled = cfg.notifications.enabled
+    notifierSound = cfg.notifications.sound
   }
 }
 
-const { waitUntilExit } = render(<App registry={registry} />, {
+const notifier = new NotificationManager({
+  enabled: notifierEnabled,
+  sound: notifierSound,
+})
+
+const { waitUntilExit } = render(<App registry={registry} notifier={notifier} />, {
   exitOnCtrlC: true,
 })
 
@@ -120,26 +230,37 @@ function usage(): string {
 
 Usage:
   beto                          launch (reads ~/.beto/config.json)
+  beto bar                      emit SwiftBar markdown to stdout (and exit)
+  beto doctor [--no-cache]      print the detection matrix and exit
   beto --jobs-dir <path>        single-harness, Claude jobs dir override
   beto --mock-dir <path>        multi-harness mock mode (.tmp/jobs-*/)
   beto --harness <id>           restrict to one adapter (claude|codex|...)
   beto --poll <ms>              poll cadence (default 2000)
+  beto --no-notifications       disable OS notifications for this run
   beto --version                print version
   beto --help                   this message
 
 Keyboard:
   1-9    peek the Nth session
   d      dispatch a new Claude session (\`claude --bg "<prompt>"\`)
-  a      (in peek) attach via Terminal — Claude only in v0.2
-  r      (in peek) reply via clipboard — Claude only in v0.2
+  a      (in peek) attach via Terminal — Claude only in v0.2.x
+  r      (in peek) reply via clipboard — Claude only in v0.2.x
   f      cycle the harness filter (all → claude → codex → ...)
   Esc    back / close overlay
   q      quit
 
-Harnesses (v0.2):
+Harnesses (built-in detection):
   ${HARNESS_IDS.join(' · ')}
-  Only \`claude\` has a real adapter today. The rest are reserved slots
-  ready for v0.3+ adapter implementations.
+
+Adapters (v0.3):
+  Claude has its built-in adapter; everything else loads via plugin
+  manifests at ~/.beto/plugins/*.json. Four built-in adapter kinds:
+    - directory-of-state-json   (Claude / Codex)
+    - sqlite-sessions-table     (Hermes / Goose)
+    - jsonl-tail                (Open Interpreter / Aider variants)
+    - process-watch-only        (Aider / any process-only CLI)
+  Reference manifests ship in manifests/. Drop your own into
+  ~/.beto/plugins/ — they override the bundled ones by id.
 
 Source: https://github.com/ckpxgfnksd-max/beto
 `

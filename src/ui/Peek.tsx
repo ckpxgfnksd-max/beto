@@ -4,9 +4,9 @@ import TextInput from 'ink-text-input'
 import type { SessionSnapshot } from '../lib/types.js'
 import { inferRole, ROLE_GLYPH, ROLE_SHORT } from '../lib/roles.js'
 import {
-  HARNESS_COLOR,
-  HARNESS_NAME,
-  HARNESS_SIGIL,
+  colorFor,
+  nameFor,
+  sigilFor,
   STATE_COLOR,
   STATE_GLYPH,
 } from './theme.js'
@@ -37,8 +37,8 @@ export function Peek({ row, now, replyFocused, onSubmitReply, flash }: Props) {
         <Text color={stateColor} bold>
           {STATE_GLYPH[row.state]} {row.name}
         </Text>
-        <Text color={HARNESS_COLOR[row.harness]} bold> {HARNESS_SIGIL[row.harness]}</Text>
-        <Text dimColor> ({HARNESS_NAME[row.harness]})</Text>
+        <Text color={colorFor(row.harness)} bold> {sigilFor(row.harness)}</Text>
+        <Text dimColor> ({nameFor(row.harness)})</Text>
         <Text dimColor> · ({ROLE_GLYPH[role]} {ROLE_SHORT[role]})</Text>
         <Text dimColor> · {row.sessionId}</Text>
       </Box>
@@ -63,6 +63,18 @@ export function Peek({ row, now, replyFocused, onSubmitReply, flash }: Props) {
         <Box marginTop={1}>
           <Text dimColor>cwd: </Text>
           <Text>{row.cwd}</Text>
+        </Box>
+      )}
+
+      {(row.tokensIn != null || row.tokenRateLast60s != null) && (
+        <Box marginTop={1}>
+          <Text dimColor>Tokens: </Text>
+          <Text>
+            {fmt(row.tokensIn)} in · {fmt(row.tokensOut)} out
+          </Text>
+          {row.tokenRateLast60s != null ? (
+            <Text dimColor> · {row.tokenRateLast60s} tps (60s)</Text>
+          ) : null}
         </Box>
       )}
 
@@ -106,4 +118,12 @@ export function Peek({ row, now, replyFocused, onSubmitReply, flash }: Props) {
       )}
     </Box>
   )
+}
+
+// Compact integer formatter — 1234 → "1.2k", 1234567 → "1.2M".
+function fmt(n: number | undefined): string {
+  if (n == null) return '0'
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k'
+  return (n / 1_000_000).toFixed(1) + 'M'
 }
