@@ -38,7 +38,7 @@ Most observability tools answer "what did the agent do?" beto answers "should I 
 
 Each row carries a **harness sigil** so you can see at a glance whether the blocked session is Claude (`C`), Codex (`X`), Hermes (`H`), Goose (`G`), or any other. The three-tier escalation ramp (awaiting → escalated → abandoned) is universal — it doesn't care which provider the agent comes from.
 
-## What's wired today (v0.3)
+## What's wired today (v0.5)
 
 - **Universal sidebar UI** — single TUI that adapts from ultra-compact (<50 cols) → sidebar (50–80 cols) → wide (≥80 cols) based on terminal width.
 - **Harness-agnostic adapter pattern** — every provider plugs in behind a single `Adapter` interface; the store merges per-harness emissions into one flat list keyed by `<harness>:<sessionId>`.
@@ -46,6 +46,7 @@ Each row carries a **harness sigil** so you can see at a glance whether the bloc
 - **Startup banner** — every launch prints one line: `beto detected: ○ Claude Code 2.1.x · ○ Codex · backends: ollama`.
 - **Plugin manifest schema** — drop a `*.json` into `~/.beto/plugins/` and beto auto-registers an adapter on next launch. Five reference manifests ship in `manifests/` (Codex, Hermes, Goose, Aider, Open Interpreter).
 - **Four built-in adapter kinds:** `directory-of-state-json` · `sqlite-sessions-table` (shells out to `sqlite3` CLI) · `jsonl-tail` · `process-watch-only`.
+- **OS notifications on `needs-input` transitions** — *(v0.5)* macOS `osascript display notification` / Linux `notify-send`. Per-session throttle (30s default) so a flickering blocked-status doesn't spam. Sound off by default. Turn off with `--no-notifications` or `notifications.enabled: false` in `~/.beto/config.json`.
 - **Built-in Claude adapter** — the canonical first-party harness with a working commander layer (dispatch / attach / reply via clipboard). Other harnesses are read-only via plugins for now.
 - **Harness filter** — press `f` to cycle.
 
@@ -110,9 +111,9 @@ Field maps may not match the real on-disk schemas exactly — see `manifests/REA
 |---------|--------|----------------------------------------------------------------------------|
 | v0.2    | ✓      | Universal sidebar UI · adapter pattern · multi-harness mock              |
 | v0.2.1  | ✓      | Layered auto-detection (PATH + state-dir + process scan) · `beto doctor` |
-| v0.3 *(now)* | ✓ | Plugin manifest schema · 4 adapter kinds · 5 reference manifests          |
+| v0.3    | ✓      | Plugin manifest schema · 4 adapter kinds · 5 reference manifests          |
+| v0.5 *(now)* | ✓ | Desktop notifications on `needs-input` transitions (macOS + Linux)         |
 | v0.4    |        | Verified field-maps via real-install testing                              |
-| v0.5    |        | Desktop notifications on `needs-input` transitions                        |
 | v0.6+   |        | Per-harness commander layer (dispatch/attach/reply beyond Claude)         |
 | v1.0    |        | macOS menubar UI · published to npm                                       |
 
@@ -204,11 +205,19 @@ bun src/cli.tsx --mock-dir "$(pwd)/.tmp"
     "openclaw":  { "enabled": false },
     "openhands": { "enabled": false },
     "aider":     { "enabled": false }
+  },
+  "notifications": {
+    "enabled": true,
+    "sound": false
   }
 }
 ```
 
-`enabled: true` for a non-Claude harness in v0.2 is a *reservation* — the slot is acknowledged but no adapter reads it yet. v0.3+ wires the real implementations.
+`enabled: true` for a non-Claude harness means "I want this surfaced." Whether an actual adapter loads depends on:
+- Built-in harnesses (today: `claude`) have native TS adapters.
+- Everything else loads via a plugin manifest in `~/.beto/plugins/` or the bundled `manifests/`.
+
+**Notifications** fire on every transition into `needs-input`, throttled per session (30s default) so a flickering blocked status doesn't spam. macOS uses `osascript display notification`; Linux uses `notify-send` (silent no-op if missing); Windows is no-op in v0.5. Audio off by default — flip `sound: true` to opt in. `--no-notifications` disables for a single run.
 
 ## Lineage
 

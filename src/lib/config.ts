@@ -22,8 +22,16 @@ export interface HarnessConfig {
   path?: string
 }
 
+export interface NotificationsConfig {
+  // Master switch. When unset, defaults to true on macOS/Linux.
+  enabled: boolean
+  // Audible cue on each notification. Default false.
+  sound: boolean
+}
+
 export interface BetoConfig {
   harnesses: Record<HarnessId, HarnessConfig>
+  notifications?: NotificationsConfig
   version: 1
 }
 
@@ -119,7 +127,11 @@ export async function autoDetect(p?: ConfigPaths): Promise<BetoConfig> {
       harnesses[id] = { enabled: exists }
     }
   }
-  return { version: CONFIG_VERSION, harnesses: harnesses as Record<HarnessId, HarnessConfig> }
+  return {
+    version: CONFIG_VERSION,
+    harnesses: harnesses as Record<HarnessId, HarnessConfig>,
+    notifications: defaultNotifications(),
+  }
 }
 
 function mergeWithDefaults(cfg: Partial<BetoConfig>): BetoConfig {
@@ -127,7 +139,20 @@ function mergeWithDefaults(cfg: Partial<BetoConfig>): BetoConfig {
   for (const id of HARNESS_IDS) {
     harnesses[id] = cfg.harnesses?.[id] ?? { enabled: id === 'claude' }
   }
-  return { version: CONFIG_VERSION, harnesses: harnesses as Record<HarnessId, HarnessConfig> }
+  return {
+    version: CONFIG_VERSION,
+    harnesses: harnesses as Record<HarnessId, HarnessConfig>,
+    notifications: cfg.notifications ?? defaultNotifications(),
+  }
+}
+
+function defaultNotifications(): NotificationsConfig {
+  // Enable on platforms where the OS notification path exists; let
+  // users on Windows opt-in via config edit when they want it.
+  return {
+    enabled: process.platform === 'darwin' || process.platform === 'linux',
+    sound: false,
+  }
 }
 
 async function pathExists(p: string): Promise<boolean> {

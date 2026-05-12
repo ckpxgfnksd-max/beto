@@ -27,6 +27,7 @@ import { loadOrInitConfig } from './lib/config.js'
 import { detect } from './lib/detect.js'
 import { printBanner, printDoctor } from './lib/doctor.js'
 import { loadPlugins } from './lib/plugins.js'
+import { NotificationManager } from './lib/notifications.js'
 import { fileURLToPath } from 'node:url'
 import { HARNESS_IDS, type HarnessId } from './lib/types.js'
 
@@ -43,9 +44,13 @@ if (args.includes('--help') || args.includes('-h')) {
   process.exit(0)
 }
 if (args.includes('--version') || args.includes('-V')) {
-  process.stdout.write('beto 0.3.0\n')
+  process.stdout.write('beto 0.5.0\n')
   process.exit(0)
 }
+
+// --no-notifications disables OS notifications for the session. Useful
+// for screen-recording, screencasts, focused work blocks, etc.
+const notificationsDisabledByFlag = args.includes('--no-notifications')
 
 // Subcommand: `beto doctor` prints the detection matrix and exits.
 // Accepts --no-cache to force a fresh probe.
@@ -69,6 +74,10 @@ if (harnessOverride && !(HARNESS_IDS as readonly string[]).includes(harnessOverr
 }
 
 const registry = new HarnessRegistry()
+// Build the notifier eagerly so both mock-dir and normal paths get it.
+// The actual enabled state is resolved below — config can override.
+let notifierEnabled = !notificationsDisabledByFlag
+let notifierSound = false
 
 if (mockDir) {
   // Multi-harness mock mode: one MockAdapter per .tmp/jobs-<harness>/
@@ -145,9 +154,20 @@ if (mockDir) {
       }),
     )
   }
+
+  // Notifications config from ~/.beto/config.json. CLI flag wins if set.
+  if (cfg.notifications) {
+    if (!notificationsDisabledByFlag) notifierEnabled = cfg.notifications.enabled
+    notifierSound = cfg.notifications.sound
+  }
 }
 
-const { waitUntilExit } = render(<App registry={registry} />, {
+const notifier = new NotificationManager({
+  enabled: notifierEnabled,
+  sound: notifierSound,
+})
+
+const { waitUntilExit } = render(<App registry={registry} notifier={notifier} />, {
   exitOnCtrlC: true,
 })
 
@@ -164,6 +184,7 @@ Usage:
   beto --mock-dir <path>        multi-harness mock mode (.tmp/jobs-*/)
   beto --harness <id>           restrict to one adapter (claude|codex|...)
   beto --poll <ms>              poll cadence (default 2000)
+  beto --no-notifications       disable OS notifications for this run
   beto --version                print version
   beto --help                   this message
 

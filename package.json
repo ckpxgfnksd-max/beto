@@ -1,6 +1,6 @@
 {
   "name": "beto",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "description": "Universal terminal sidebar for AI agent sessions. Claude Code, Codex, Hermes, Goose, and any harness with a plugin manifest.",
   "type": "module",
   "bin": {

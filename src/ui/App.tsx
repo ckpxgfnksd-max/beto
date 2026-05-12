@@ -6,9 +6,13 @@ import { Inbox } from './Inbox.js'
 import { Peek } from './Peek.js'
 import { Dispatch as DispatchView } from './Dispatch.js'
 import { attach, dispatch, reply, resolveDispatchCwd } from '../lib/commander.js'
+import type { NotificationManager } from '../lib/notifications.js'
 
 interface Props {
   registry: HarnessRegistry
+  // Optional so tests and the mock-dir path can pass nothing and skip
+  // notifications. When present, each registry emission is fed in.
+  notifier?: NotificationManager
 }
 
 // App root. Owns:
@@ -20,7 +24,7 @@ interface Props {
 //
 // Width comes from `useStdout().stdout.columns` and drives the layout-mode
 // selection in Inbox/SidebarRow/Row.
-export function App({ registry }: Props) {
+export function App({ registry, notifier }: Props) {
   const { exit } = useApp()
   const { stdout } = useStdout()
   const width = stdout?.columns ?? 80
@@ -47,8 +51,7 @@ export function App({ registry }: Props) {
   useEffect(() => {
     const unsub = registry.onChange((merged) => {
       // Group the merged emission back by harness so setHarnessRows can
-      // replace the right slice. The registry already does per-adapter
-      // replacement; this is the inverse projection for the store.
+      // replace the right slice.
       const byHarness = new Map<string, typeof merged>()
       for (const row of merged) {
         const arr = byHarness.get(row.harness) ?? []
@@ -58,18 +61,21 @@ export function App({ registry }: Props) {
       for (const [harness, rows] of byHarness) {
         setHarnessRows(harness as never, rows)
       }
-      // Clear any harness whose slice went empty (adapter saw zero rows).
       const seenIds = new Set(merged.map((r) => r.harness))
       for (const id of registry.harnessIds) {
         if (!seenIds.has(id)) setHarnessRows(id, [])
       }
+      // v0.5: feed every merged emission to the notifier so it can fire
+      // OS notifications on needs-input transitions. The notifier dedups
+      // and throttles internally; the App doesn't need to track state.
+      notifier?.observe(merged)
     })
     registry.start()
     return () => {
       unsub()
       registry.stop()
     }
-  }, [registry, setHarnessRows])
+  }, [registry, setHarnessRows, notifier])
 
   useEffect(() => {
     const id = setInterval(tick, 5_000)
