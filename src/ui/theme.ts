@@ -6,7 +6,7 @@
 // maps onto color intensity (yellow → bright yellow → red), not animation
 // (TUIs don't blink reliably across terminals).
 
-import type { EscalationTier, SessionState } from '../lib/types.js'
+import type { EscalationTier, HarnessId, SessionState } from '../lib/types.js'
 
 // Ink color names (chalk-style). 'yellow' renders as a warm amber on
 // most palettes; 'redBright' is reserved for danger/dead.
@@ -44,4 +44,55 @@ export const TIER_LABEL: Record<EscalationTier, string> = {
   awaiting: 'awaiting',
   escalated: 'escalated',
   abandoned: 'abandoned',
+}
+
+// Single-character sigil per harness. Picked for visual distinctness and
+// no false-friends with state glyphs. Mono-width on all terminals.
+export const HARNESS_SIGIL: Record<HarnessId, string> = {
+  claude: 'C',
+  codex: 'X',
+  hermes: 'H',
+  goose: 'G',
+  kimi: 'K',
+  openclaw: 'O',
+  openhands: 'D',
+  aider: 'A',
+}
+
+// Display name per harness — header tooltip + peek panel.
+export const HARNESS_NAME: Record<HarnessId, string> = {
+  claude: 'Claude Code',
+  codex: 'Codex',
+  hermes: 'Hermes',
+  goose: 'Goose',
+  kimi: 'Kimi',
+  openclaw: 'OpenClaw',
+  openhands: 'OpenHands',
+  aider: 'Aider',
+}
+
+// Per-harness accent color. Used to tint the sigil so the eye can scan
+// harness-mix at a glance without reading the letter.
+export const HARNESS_COLOR: Record<HarnessId, string> = {
+  claude: 'magentaBright', // Anthropic accent
+  codex: 'green', // OpenAI green
+  hermes: 'blueBright', // Nous Hermes
+  goose: 'cyan', // Block Goose
+  kimi: 'yellowBright', // Moonshot Kimi
+  openclaw: 'red', // OpenClaw
+  openhands: 'whiteBright', // OpenHands
+  aider: 'gray', // Aider
+}
+
+// Layout-mode breakpoints (terminal columns).
+//   < ULTRA → ultra-compact single line, no summary
+//   < SIDEBAR → sidebar (2-line, summary truncated to width)
+//   ≥ SIDEBAR → wide v0.1 layout
+export const WIDTH_ULTRA = 50
+export const WIDTH_SIDEBAR = 80
+export type LayoutMode = 'ultra' | 'sidebar' | 'wide'
+export function pickLayout(cols: number): LayoutMode {
+  if (cols < WIDTH_ULTRA) return 'ultra'
+  if (cols < WIDTH_SIDEBAR) return 'sidebar'
+  return 'wide'
 }
