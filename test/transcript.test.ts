@@ -56,8 +56,20 @@ describe('ClaudeTranscriptReader.parse', () => {
     expect(snap!.tokensOut).toBe(50)
   })
 
-  it('returns null when no usage data is present', () => {
+  it('returns a snapshot with zero tokens when only a user message exists', () => {
+    // Pre-v0.8: this returned null. Post-v0.8 we surface the user
+    // message as firstUserMessage even before any assistant reply, so
+    // the snapshot becomes useful for naming a just-started session.
     const text = JSON.stringify({ type: 'user', message: { content: 'hi' } })
+    const snap = reader.parse('sess-1', text)
+    expect(snap).not.toBeNull()
+    expect(snap!.tokensIn).toBe(0)
+    expect(snap!.tokensOut).toBe(0)
+    expect(snap!.firstUserMessage).toBe('hi')
+  })
+
+  it('still returns null when transcript carries no useful fields at all', () => {
+    const text = JSON.stringify({ type: 'system', irrelevant: true })
     const snap = reader.parse('sess-1', text)
     expect(snap).toBeNull()
   })
@@ -90,6 +102,98 @@ describe('ClaudeTranscriptReader.parse', () => {
     const snap = reader.parse('sess-1', text)
     expect(snap!.tokensIn).toBe(33)
     expect(snap!.tokensOut).toBe(11)
+  })
+})
+
+describe('ClaudeTranscriptReader: extract task + activity', () => {
+  const reader = new ClaudeTranscriptReader({ now: () => NOW })
+
+  it('extracts first user message as the session task title', () => {
+    const text = [
+      JSON.stringify({ type: 'user', message: { content: 'Build the MVP for a Strategic Information Radar' } }),
+      assistantRec(50, 30, 10),
+    ].join('\n')
+    const snap = reader.parse('s', text)
+    expect(snap!.firstUserMessage).toBe('Build the MVP for a Strategic Information Radar')
+  })
+
+  it('extracts first user message from array content blocks', () => {
+    const text = [
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: 'fix the auth bug' }] },
+      }),
+      assistantRec(50, 30, 10),
+    ].join('\n')
+    const snap = reader.parse('s', text)
+    expect(snap!.firstUserMessage).toBe('fix the auth bug')
+  })
+
+  it('extracts latest assistant text block (skips tool_use)', () => {
+    const text = [
+      JSON.stringify({ type: 'user', message: { content: 'first task' } }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: new Date(NOW - 30_000).toISOString(),
+        message: {
+          usage: { input_tokens: 100, output_tokens: 50 },
+          content: [{ type: 'text', text: 'Old assistant message' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: new Date(NOW - 10_000).toISOString(),
+        message: {
+          usage: { input_tokens: 200, output_tokens: 80 },
+          content: [
+            { type: 'tool_use', name: 'bash', input: {} },
+            { type: 'text', text: 'Currently running cargo test' },
+          ],
+        },
+      }),
+    ].join('\n')
+    const snap = reader.parse('s', text)
+    expect(snap!.lastAssistantText).toBe('Currently running cargo test')
+  })
+
+  it('returns empty strings when transcript has no usable text', () => {
+    const text = assistantRec(50, 20, 10) // assistant with usage only, no content
+    const snap = reader.parse('s', text)
+    expect(snap!.firstUserMessage).toBe('')
+    expect(snap!.lastAssistantText).toBe('')
+  })
+
+  it('truncates very long messages to ≤ 200 chars', () => {
+    const long = 'a'.repeat(500)
+    const text = [
+      JSON.stringify({ type: 'user', message: { content: long } }),
+      assistantRec(50, 30, 10),
+    ].join('\n')
+    const snap = reader.parse('s', text)
+    expect(snap!.firstUserMessage.length).toBeLessThanOrEqual(200)
+  })
+
+  it('collapses whitespace + newlines in extracted text', () => {
+    const text = [
+      JSON.stringify({
+        type: 'user',
+        message: { content: 'multi\n   line\n\nmessage with\ttabs' },
+      }),
+      assistantRec(50, 30, 10),
+    ].join('\n')
+    const snap = reader.parse('s', text)
+    expect(snap!.firstUserMessage).toBe('multi line message with tabs')
+  })
+
+  it('uses head buffer for firstUserMessage when head + tail are separate', () => {
+    const headOnly = JSON.stringify({
+      type: 'user',
+      message: { content: 'task from head buffer' },
+    })
+    const tailOnly = assistantRec(100, 50, 10)
+    const snap = reader.parse('s', headOnly, tailOnly)
+    expect(snap!.firstUserMessage).toBe('task from head buffer')
+    expect(snap!.tokensOut).toBe(50)
   })
 })
 
@@ -139,6 +243,8 @@ describe('applyTokens', () => {
       tokensOut: 500,
       tokenRateLast60s: 25,
       lastAssistantAt: NOW,
+      firstUserMessage: '',
+      lastAssistantText: '',
     })
     expect(out.tokensIn).toBe(1000)
     expect(out.tokenRateLast60s).toBe(25)
@@ -150,7 +256,7 @@ describe('synthesizeFromTranscript', () => {
   it('emits "working" when the last assistant message is within 30s', () => {
     const snap = synthesizeFromTranscript(
       'sid',
-      { sessionId: 'sid', tokensIn: 100, tokensOut: 50, tokenRateLast60s: 5, lastAssistantAt: NOW - 10_000 },
+      { sessionId: 'sid', tokensIn: 100, tokensOut: 50, tokenRateLast60s: 5, lastAssistantAt: NOW - 10_000, firstUserMessage: '', lastAssistantText: '' },
       NOW,
     )
     expect(snap?.state).toBe('working')
@@ -160,7 +266,7 @@ describe('synthesizeFromTranscript', () => {
   it('emits "idle" within 5 min', () => {
     const snap = synthesizeFromTranscript(
       'sid',
-      { sessionId: 'sid', tokensIn: 100, tokensOut: 50, tokenRateLast60s: 0, lastAssistantAt: NOW - 120_000 },
+      { sessionId: 'sid', tokensIn: 100, tokensOut: 50, tokenRateLast60s: 0, lastAssistantAt: NOW - 120_000, firstUserMessage: '', lastAssistantText: '' },
       NOW,
     )
     expect(snap?.state).toBe('idle')
@@ -169,7 +275,7 @@ describe('synthesizeFromTranscript', () => {
   it('emits "completed" past 5 min', () => {
     const snap = synthesizeFromTranscript(
       'sid',
-      { sessionId: 'sid', tokensIn: 100, tokensOut: 50, tokenRateLast60s: 0, lastAssistantAt: NOW - 10 * 60 * 1000 },
+      { sessionId: 'sid', tokensIn: 100, tokensOut: 50, tokenRateLast60s: 0, lastAssistantAt: NOW - 10 * 60 * 1000, firstUserMessage: '', lastAssistantText: '' },
       NOW,
     )
     expect(snap?.state).toBe('completed')
@@ -179,7 +285,7 @@ describe('synthesizeFromTranscript', () => {
   it('returns null when transcript has no assistant timestamp', () => {
     const snap = synthesizeFromTranscript(
       'sid',
-      { sessionId: 'sid', tokensIn: 0, tokensOut: 0, tokenRateLast60s: 0, lastAssistantAt: 0 },
+      { sessionId: 'sid', tokensIn: 0, tokensOut: 0, tokenRateLast60s: 0, lastAssistantAt: 0, firstUserMessage: '', lastAssistantText: '' },
       NOW,
     )
     expect(snap).toBeNull()

@@ -344,12 +344,19 @@ function shallowEqualRows(a: SessionSnapshot[], b: SessionSnapshot[]): boolean {
 // Decorate an existing SessionSnapshot with token data pulled from the
 // transcript. Pure: returns a new snapshot. Used when state.json and
 // transcript both speak about the same sessionId.
+//
+// Backfill rule: state.json wins for fields it carries. Transcript
+// fills in only what state.json left empty. Most relevant for `summary`
+// — when the supervisor didn't write one, the latest assistant text
+// from the transcript is the best available "what is it doing."
 export function applyTokens(row: SessionSnapshot, tok: TokenSnapshot): SessionSnapshot {
   return {
     ...row,
     tokensIn: tok.tokensIn,
     tokensOut: tok.tokensOut,
     tokenRateLast60s: tok.tokenRateLast60s,
+    summary: row.summary || tok.lastAssistantText || row.summary,
+    name: row.name || tok.firstUserMessage.slice(0, 60) || row.name,
   }
 }
 
@@ -364,19 +371,25 @@ export function synthesizeFromTranscript(
   tok: TokenSnapshot,
   nowMs: number,
 ): SessionSnapshot | null {
-  if (tok.lastAssistantAt === 0) return null
-  const age = nowMs - tok.lastAssistantAt
+  if (tok.lastAssistantAt === 0 && !tok.firstUserMessage) return null
+  const age = tok.lastAssistantAt > 0 ? nowMs - tok.lastAssistantAt : Infinity
   let state: SessionState
   if (age < RECENT_WORKING_MS) state = 'working'
   else if (age < RECENT_IDLE_MS) state = 'idle'
   else state = 'completed'
+  // Prefer the first user message as the session "name" — it's the
+  // task title the operator typed. Cap at 60 chars; the UI truncates
+  // further. Fall back to sessionId prefix when no message exists yet.
   const fallbackName = sessionId.length > 8 ? sessionId.slice(0, 8) : sessionId
+  const name = tok.firstUserMessage
+    ? tok.firstUserMessage.slice(0, 60)
+    : fallbackName
   return {
     harness: 'claude',
     sessionId,
-    name: fallbackName,
+    name,
     state,
-    summary: '',
+    summary: tok.lastAssistantText,
     lastTransitionAt: tok.lastAssistantAt,
     processAlive: age < RECENT_IDLE_MS,
     prUrl: '',
