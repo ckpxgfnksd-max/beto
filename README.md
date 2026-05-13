@@ -81,7 +81,7 @@ A live status item appears at the top of your screen, refreshing every 30s. Titl
 | Claude Code | verified | built-in adapter, no manifest needed |
 | Codex (OpenAI CLI) | verified | [`manifests/codex.json`](../manifests/codex.json) — `jsonl-index` |
 | OpenCode (`opencode-ai`) | verified | [`manifests/opencode.json`](../manifests/opencode.json) — `sqlite-sessions-table` |
-| Hermes · Goose · Aider · Open Interpreter | experimental | [`manifests/experimental/`](../manifests/experimental/), opt-in via `~/.beto/plugins/` |
+| Hermes · Goose · Aider · Open Interpreter · Kimi | experimental | [`manifests/experimental/`](../manifests/experimental/), opt-in via `~/.beto/plugins/` |
 | Your harness | one JSON file | [docs/manifest-spec.md](manifest-spec.md) |
 
 Pick from five adapter kinds — `directory-of-state-json`, `sqlite-sessions-table`, `jsonl-tail`, `jsonl-index`, `process-watch-only` — point at your harness's data dir, map its field names. PRs to `manifests/experimental/*.json` welcomed.

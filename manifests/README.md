@@ -23,6 +23,7 @@ Two tiers:
 | `experimental/goose.json` | `sqlite-sessions-table` | Schema best-effort from Block/AAIF docs; needs verification on a real install |
 | `experimental/aider.json` | `process-watch-only` | Trivially works (no field map) but Aider's per-repo `.aider.chat.history.md` is not surfaced — only running processes |
 | `experimental/open-interpreter.json` | `jsonl-tail` | Schema best-effort; needs verification against `~/.config/open-interpreter/conversations/*.jsonl` |
+| `experimental/kimi.json` | `process-watch-only` | Detects the `kimi` process. Per-session state lives at `~/.kimi/sessions/<md5(cwd)>/<session_id>/{state.json,context.jsonl}` but the current adapter kinds don't fit a 2-level path. Richer adapter is on the v0.9 roadmap; PRs welcome from Kimi users. |
 
 ## Using experimental manifests
 
