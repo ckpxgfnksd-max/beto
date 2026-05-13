@@ -63,8 +63,11 @@ export function Row({ index, row, tier, now, cursor }: Props) {
         {tierLabel ? (
           <Text color={tierColor}> · {tierLabel}</Text>
         ) : null}
+        {row.tokensOut != null && row.tokensOut > 0 ? (
+          <Text dimColor>  · {formatCount(row.tokensOut)} out</Text>
+        ) : null}
         {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
-          <Text dimColor>  · {row.tokenRateLast60s} tps</Text>
+          <Text dimColor> · {row.tokenRateLast60s} tps</Text>
         ) : null}
         {row.prCheckStatus ? (
           <Text dimColor>  {prBadge(row.prCheckStatus)}</Text>
@@ -104,4 +107,10 @@ function prBadge(status: string): string {
 function truncate(s: string, max: number): string {
   if (s.length <= max) return s
   return s.slice(0, max - 1) + '…'
+}
+
+function formatCount(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k'
+  return (n / 1_000_000).toFixed(1) + 'M'
 }

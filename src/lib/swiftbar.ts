@@ -150,13 +150,17 @@ function formatRow(row: SessionSnapshot, statusTail: string, color = ''): string
     themeSigil && themeSigil !== row.harness.charAt(0).toUpperCase()
       ? themeSigil
       : HARNESS_SIGIL[row.harness] ?? themeSigil
+  // Token bit: cumulative output ("how much code/output has this session
+  // produced") + live TPS ("how fast is it generating right now").
+  // Both omitted when zero so completed rows stay clean.
+  const tokOut = row.tokensOut != null && row.tokensOut > 0 ? ` · ${formatCount(row.tokensOut)} out` : ''
   const tps =
     row.tokenRateLast60s != null && row.tokenRateLast60s > 0
       ? ` · ${row.tokenRateLast60s} tps`
       : ''
   const glyph = STATE_GLYPH[row.state] ?? '·'
-  const name = truncate(row.name, 14).padEnd(14)
-  const line = `${glyph} ${name} ${sigil} · ${statusTail}${tps}`
+  const name = truncate(row.name, 22).padEnd(22)
+  const line = `${glyph} ${name} ${sigil} · ${statusTail}${tokOut}${tps}`
   const flags: string[] = ['font=Menlo']
   if (color) flags.push(`color=${color}`)
   return `${line} | ${flags.join(' ')}`
@@ -176,4 +180,11 @@ function truncate(s: string, max: number): string {
   if (s.length <= max) return s
   if (max <= 1) return s.slice(0, max)
   return s.slice(0, max - 1) + '…'
+}
+
+// Compact integer formatter for token counts: 1234 → "1.2k", 1234567 → "1.2M".
+function formatCount(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k'
+  return (n / 1_000_000).toFixed(1) + 'M'
 }

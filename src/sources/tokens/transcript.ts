@@ -22,13 +22,20 @@ import * as path from 'node:path'
 import * as os from 'node:os'
 
 const WINDOW_MS = 60 * 1000
-// Above this, only the trailing 64KB is read each scan; below it, the
-// whole file is parsed. Most transcripts are well under 64KB so this is
-// effectively "read the whole file" in practice.
+// Tail cap. Above this size, only the trailing slice is parsed for
+// tokens / current-activity. Below it, the whole file is one buffer.
 const TAIL_BYTES = 64 * 1024
-// Cap of records parsed per file per scan — bounded work even if
+// Head cap. For files larger than the tail cap we ALSO read a small
+// head buffer to capture the first user message (the session "task"),
+// which lives near line 1 and would otherwise be lost to the tail-only
+// read. 8KB is plenty for ~10 leading records on Claude's schema.
+const HEAD_BYTES = 8 * 1024
+// Cap of records parsed per region per scan — bounded work even if
 // someone manages a multi-megabyte transcript with no cache hits.
 const MAX_RECORDS_PER_FILE = 2000
+// Truncate the task + activity strings to this length when storing them
+// on the snapshot. UI surfaces all truncate further to the row width.
+const SUMMARY_CAP = 200
 
 export interface TokenSnapshot {
   sessionId: string
@@ -39,6 +46,14 @@ export interface TokenSnapshot {
   // transcript. Useful for the ClaudeAdapter when synthesizing rows
   // from JSONL alone (no state.json present).
   lastAssistantAt: number
+  // First user message text in the transcript (truncated to 200 chars).
+  // Used as the session's "task" / name when state.json is absent.
+  // Empty string if the transcript has no user message yet.
+  firstUserMessage: string
+  // Most recent assistant *text* block (truncated to 200 chars). Used
+  // as the session's "current activity" / summary when state.json
+  // doesn't carry one. Skips tool_use blocks — only narrative text.
+  lastAssistantText: string
 }
 
 export interface ClaudeTranscriptReaderOptions {
@@ -87,6 +102,12 @@ export class ClaudeTranscriptReader {
   }
 
   // Read one transcript and compute its token snapshot.
+  //
+  // Strategy: for files ≤ TAIL_BYTES the whole file IS the tail — one
+  // read does everything. For larger files we read both a head slice
+  // (to capture the first user message that names the session) and a
+  // tail slice (for tokens + most-recent assistant text). Two parses
+  // share the same logic but operate on different buffers.
   async readOne(sessionId: string, filePath: string): Promise<TokenSnapshot | null> {
     let size: number
     try {
@@ -98,26 +119,40 @@ export class ClaudeTranscriptReader {
     }
     if (size === 0) return null
 
-    // Read the tail (or whole file if small).
     const fh = await fs.open(filePath, 'r')
     try {
-      const bytesToRead = Math.min(size, TAIL_BYTES)
-      const offset = size - bytesToRead
-      const buf = Buffer.alloc(bytesToRead)
-      await fh.read(buf, 0, bytesToRead, offset)
-      let text = buf.toString('utf-8')
-      if (offset > 0) {
+      let headText = ''
+      let tailText = ''
+
+      if (size <= TAIL_BYTES) {
+        const buf = Buffer.alloc(size)
+        await fh.read(buf, 0, size, 0)
+        tailText = buf.toString('utf-8')
+        headText = tailText // single buffer covers both regions
+      } else {
+        const headBytes = Math.min(HEAD_BYTES, size)
+        const headBuf = Buffer.alloc(headBytes)
+        await fh.read(headBuf, 0, headBytes, 0)
+        headText = headBuf.toString('utf-8')
+
+        const tailBuf = Buffer.alloc(TAIL_BYTES)
+        await fh.read(tailBuf, 0, TAIL_BYTES, size - TAIL_BYTES)
+        let tailRaw = tailBuf.toString('utf-8')
         // Drop the leading partial line — we sliced into the middle of one.
-        const firstNl = text.indexOf('\n')
-        if (firstNl >= 0) text = text.slice(firstNl + 1)
+        const firstNl = tailRaw.indexOf('\n')
+        if (firstNl >= 0) tailRaw = tailRaw.slice(firstNl + 1)
+        tailText = tailRaw
       }
-      return this.parse(sessionId, text)
+
+      return this.parse(sessionId, headText, tailText)
     } finally {
       await fh.close()
     }
   }
 
-  // Parse a JSONL text blob into a token snapshot. Public for tests.
+  // Parse head + tail JSONL buffers into a token snapshot. Public for
+  // tests; callers from outside (test fixtures) can pass the same text
+  // for both args when the transcript fits in one buffer.
   //
   // Rate semantics: tokens/sec uses *output* tokens only, averaged over
   // the trailing 60-second window. Output is the meaningful "is the
@@ -125,38 +160,75 @@ export class ClaudeTranscriptReader {
   // every cache read (which fly through in ms) and isn't what the
   // operator wants on the bar. Cumulative tokensIn / tokensOut stay
   // inclusive so the peek view can show the full picture.
-  parse(sessionId: string, text: string): TokenSnapshot | null {
+  //
+  // Activity extraction:
+  //   firstUserMessage: first record with type='user' anywhere in head;
+  //     truncated. This becomes the session's task title.
+  //   lastAssistantText: most recent assistant record's first text block
+  //     (skipping tool_use blocks); truncated. This is the agent's most
+  //     recent narrative output — what's it doing right now.
+  parse(sessionId: string, headText: string, tailText?: string): TokenSnapshot | null {
     const cutoff = this.now() - WINDOW_MS
     let tokensIn = 0
     let tokensOut = 0
     let outputInWindow = 0
     let lastAssistantAt = 0
-    let count = 0
+    let lastAssistantText = ''
+    let firstUserMessage = ''
 
-    const lines = text.split('\n')
-    for (const raw of lines) {
-      if (++count > MAX_RECORDS_PER_FILE) break
-      if (!raw) continue
-      let obj: unknown
-      try {
-        obj = JSON.parse(raw)
-      } catch {
-        continue
+    // Head pass — primarily for firstUserMessage. Stops as soon as it
+    // finds one; skips records that aren't user messages.
+    {
+      let count = 0
+      for (const raw of headText.split('\n')) {
+        if (++count > MAX_RECORDS_PER_FILE) break
+        if (!raw) continue
+        const rec = tryParseJson(raw)
+        if (!rec) continue
+        if (rec.type === 'user' && !firstUserMessage) {
+          firstUserMessage = extractUserText(rec).slice(0, SUMMARY_CAP)
+          if (firstUserMessage) break
+        }
       }
-      const rec = obj as Record<string, unknown>
-      if (rec.type !== 'assistant') continue
-
-      const usage = extractUsage(rec)
-      if (!usage) continue
-      tokensIn += usage.input
-      tokensOut += usage.output
-
-      const ts = extractTimestamp(rec)
-      if (ts > lastAssistantAt) lastAssistantAt = ts
-      if (ts >= cutoff) outputInWindow += usage.output
     }
 
-    if (tokensIn === 0 && tokensOut === 0 && lastAssistantAt === 0) return null
+    // Tail pass — tokens, last assistant timestamp, last assistant text.
+    // When tail is the same as head (small file), tokens are still
+    // counted once because the head-pass above doesn't touch them.
+    const tailSource = tailText ?? headText
+    {
+      let count = 0
+      for (const raw of tailSource.split('\n')) {
+        if (++count > MAX_RECORDS_PER_FILE) break
+        if (!raw) continue
+        const rec = tryParseJson(raw)
+        if (!rec) continue
+        if (rec.type !== 'assistant') continue
+
+        const usage = extractUsage(rec)
+        if (usage) {
+          tokensIn += usage.input
+          tokensOut += usage.output
+          const ts = extractTimestamp(rec)
+          if (ts > lastAssistantAt) lastAssistantAt = ts
+          if (ts >= cutoff) outputInWindow += usage.output
+        }
+
+        // Always check for text content, even on records without usage.
+        const text = extractAssistantText(rec)
+        if (text) lastAssistantText = text.slice(0, SUMMARY_CAP)
+      }
+    }
+
+    if (
+      tokensIn === 0 &&
+      tokensOut === 0 &&
+      lastAssistantAt === 0 &&
+      !firstUserMessage &&
+      !lastAssistantText
+    ) {
+      return null
+    }
 
     return {
       sessionId,
@@ -164,6 +236,8 @@ export class ClaudeTranscriptReader {
       tokensOut,
       tokenRateLast60s: Math.round((outputInWindow / WINDOW_MS) * 1000),
       lastAssistantAt,
+      firstUserMessage,
+      lastAssistantText,
     }
   }
 }
@@ -211,4 +285,71 @@ function extractTimestamp(rec: Record<string, unknown>): number {
 function pickU(o: Record<string, unknown>, key: string): number {
   const v = o[key]
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0
+}
+
+// Defensive JSON parse — returns the record object or null. Mid-write
+// transcripts and editor saves can produce malformed lines; we skip
+// them without throwing.
+function tryParseJson(raw: string): Record<string, unknown> | null {
+  try {
+    const obj = JSON.parse(raw)
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+      return obj as Record<string, unknown>
+    }
+  } catch {
+    // skip
+  }
+  return null
+}
+
+// User-message text extraction. Claude's user records nest content
+// under `message.content` which is either a string ("hello") or an
+// array of content blocks ([{ type: 'text', text: '...' }, ...]).
+// Slash-command and system-injected messages with empty/whitespace
+// text are skipped so we keep walking for the real first message.
+function extractUserText(rec: Record<string, unknown>): string {
+  const msg = rec.message
+  if (!msg || typeof msg !== 'object') return ''
+  const content = (msg as Record<string, unknown>).content
+  if (typeof content === 'string') {
+    return content.trim().replace(/\s+/g, ' ')
+  }
+  if (Array.isArray(content)) {
+    for (const c of content) {
+      if (c && typeof c === 'object') {
+        const block = c as Record<string, unknown>
+        // Only narrative text blocks. Skip tool_result, image, etc.
+        if (block.type === 'text' && typeof block.text === 'string') {
+          const t = block.text.trim().replace(/\s+/g, ' ')
+          if (t) return t
+        }
+      }
+    }
+  }
+  return ''
+}
+
+// Assistant-message text extraction. Same shape as user content but
+// we explicitly skip tool_use blocks (those are the model deciding to
+// call a tool, not narrative output to the human). The first text
+// block in the latest assistant record is "what is it doing right now."
+function extractAssistantText(rec: Record<string, unknown>): string {
+  const msg = rec.message
+  if (!msg || typeof msg !== 'object') return ''
+  const content = (msg as Record<string, unknown>).content
+  if (typeof content === 'string') {
+    return content.trim().replace(/\s+/g, ' ')
+  }
+  if (Array.isArray(content)) {
+    for (const c of content) {
+      if (c && typeof c === 'object') {
+        const block = c as Record<string, unknown>
+        if (block.type === 'text' && typeof block.text === 'string') {
+          const t = block.text.trim().replace(/\s+/g, ' ')
+          if (t) return t
+        }
+      }
+    }
+  }
+  return ''
 }

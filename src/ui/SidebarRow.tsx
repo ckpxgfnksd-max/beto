@@ -78,8 +78,11 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
         <Text color={colorFor(row.harness)} bold>{sigilFor(row.harness)} </Text>
         <Text dimColor>· </Text>
         <Text color={row.state === 'needs-input' ? tierColor : stateColor}>{tierBit}</Text>
+        {row.tokensOut != null && row.tokensOut > 0 ? (
+          <Text dimColor>  · {formatCount(row.tokensOut)} out</Text>
+        ) : null}
         {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
-          <Text dimColor>  · {row.tokenRateLast60s} tps</Text>
+          <Text dimColor> · {row.tokenRateLast60s} tps</Text>
         ) : null}
       </Box>
       {summary && (
@@ -95,4 +98,10 @@ function truncate(s: string, max: number): string {
   if (s.length <= max) return s
   if (max <= 1) return s.slice(0, max)
   return s.slice(0, max - 1) + '…'
+}
+
+function formatCount(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k'
+  return (n / 1_000_000).toFixed(1) + 'M'
 }
