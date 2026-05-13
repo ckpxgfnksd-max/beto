@@ -90,13 +90,20 @@ export function renderSwiftBar(rows: readonly SessionSnapshot[], opts: SwiftBarO
   }
 
   // ─── active bucket ─────────────────────────────────────────────────
+  // Working rows: drop the literal "working" word — the green glyph +
+  // green row color say it. Tail is just the time-in-state.
+  // Idle rows: keep "idle Xs" — gray-on-gray is less obvious without
+  // the label.
   if (grouped.active.length > 0) {
     if (out[out.length - 1] !== '---') out.push('---')
     out.push(`ACTIVE (${liveCount}) | size=10 color=gray`)
     for (const row of grouped.active) {
       const ageBit = ageString(row.lastTransitionAt, now)
-      const tail = row.state === 'idle' ? `idle ${ageBit}`.trim() : `working ${ageBit}`.trim()
-      out.push(formatRow(row, tail))
+      if (row.state === 'idle') {
+        out.push(formatRow(row, `idle ${ageBit}`.trim()))
+      } else {
+        out.push(formatRow(row, ageBit, 'green'))
+      }
     }
   }
 
@@ -150,9 +157,11 @@ function formatRow(row: SessionSnapshot, statusTail: string, color = ''): string
     themeSigil && themeSigil !== row.harness.charAt(0).toUpperCase()
       ? themeSigil
       : HARNESS_SIGIL[row.harness] ?? themeSigil
-  // Token bit: cumulative output ("how much code/output has this session
-  // produced") + live TPS ("how fast is it generating right now").
-  // Both omitted when zero so completed rows stay clean.
+  // Token bits, all omitted when zero so completed rows stay clean:
+  //   in  — cumulative input (includes cache reads/writes). Cost magnitude.
+  //   out — cumulative output. "How much narrative has this produced."
+  //   tps — live output tokens/sec. "Is it generating right now."
+  const tokIn = row.tokensIn != null && row.tokensIn > 0 ? ` · ${formatCount(row.tokensIn)} in` : ''
   const tokOut = row.tokensOut != null && row.tokensOut > 0 ? ` · ${formatCount(row.tokensOut)} out` : ''
   const tps =
     row.tokenRateLast60s != null && row.tokenRateLast60s > 0
@@ -160,7 +169,7 @@ function formatRow(row: SessionSnapshot, statusTail: string, color = ''): string
       : ''
   const glyph = STATE_GLYPH[row.state] ?? '·'
   const name = truncate(row.name, 22).padEnd(22)
-  const line = `${glyph} ${name} ${sigil} · ${statusTail}${tokOut}${tps}`
+  const line = `${glyph} ${name} ${sigil} · ${statusTail}${tokIn}${tokOut}${tps}`
   const flags: string[] = ['font=Menlo']
   if (color) flags.push(`color=${color}`)
   return `${line} | ${flags.join(' ')}`

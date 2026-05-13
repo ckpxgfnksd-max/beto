@@ -106,7 +106,9 @@ describe('renderSwiftBar', () => {
     expect(out).toContain('RECENT')
   })
 
-  it('shows working time on active rows', () => {
+  it('shows time-in-state for working rows without the literal "working" word', () => {
+    // The green glyph + green row color say "working". The text uses
+    // the freed space for the time-in-state alone.
     const rows = [
       row({
         sessionId: 'a',
@@ -116,7 +118,41 @@ describe('renderSwiftBar', () => {
       }),
     ]
     const out = renderSwiftBar(rows, { now: () => NOW })
-    expect(out).toContain('working 5m')
+    expect(out).toContain('5m')
+    expect(out).not.toMatch(/working 5m/)
+    // And the row gets the green color flag
+    expect(out).toMatch(/font=Menlo color=green/)
+  })
+
+  it('keeps the "idle Xs" label so gray rows are still readable', () => {
+    const rows = [
+      row({
+        sessionId: 'b',
+        name: 'L',
+        state: 'idle',
+        lastTransitionAt: NOW - 120_000,
+      }),
+    ]
+    const out = renderSwiftBar(rows, { now: () => NOW })
+    expect(out).toMatch(/idle 2m/)
+  })
+
+  it('shows cumulative input tokens when present', () => {
+    const rows = [
+      row({
+        sessionId: 'c',
+        name: 'Q',
+        state: 'working',
+        lastTransitionAt: NOW - 10_000,
+        tokensIn: 5_900_000,
+        tokensOut: 24_100,
+        tokenRateLast60s: 142,
+      }),
+    ]
+    const out = renderSwiftBar(rows, { now: () => NOW })
+    expect(out).toContain('5.9M in')
+    expect(out).toContain('24.1k out')
+    expect(out).toContain('142 tps')
   })
 
   it('uses sfcolor-compatible color names that SwiftBar recognizes', () => {

@@ -41,12 +41,20 @@ export function Row({ index, row, tier, now, cursor }: Props) {
   const cursorMark = cursor ? '▶' : ' '
   const slot = index < 9 ? `${index + 1}` : '·'
 
+  // "working" reads redundant when the green dot+text already say so.
+  // Show time-in-state instead. Same posture for idle/completed where
+  // a label would just repeat the glyph.
+  const ageString = blockedFor || formatAge(row.lastTransitionAt, now)
   const statusLine =
     row.state === 'needs-input' && blockedFor
       ? `blocked ${blockedFor}`
       : row.state === 'completed' && row.prUrl
         ? 'PR ready'
-        : row.state
+        : row.state === 'working'
+          ? ageString || 'working'
+          : row.state === 'idle'
+            ? `idle ${ageString}`.trim()
+            : row.state
 
   const cwdTail = row.cwd ? row.cwd.split('/').filter(Boolean).slice(-1)[0] ?? '' : ''
 
@@ -63,8 +71,11 @@ export function Row({ index, row, tier, now, cursor }: Props) {
         {tierLabel ? (
           <Text color={tierColor}> · {tierLabel}</Text>
         ) : null}
+        {row.tokensIn != null && row.tokensIn > 0 ? (
+          <Text dimColor>  · {formatCount(row.tokensIn)} in</Text>
+        ) : null}
         {row.tokensOut != null && row.tokensOut > 0 ? (
-          <Text dimColor>  · {formatCount(row.tokensOut)} out</Text>
+          <Text dimColor> · {formatCount(row.tokensOut)} out</Text>
         ) : null}
         {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
           <Text dimColor> · {row.tokenRateLast60s} tps</Text>
@@ -113,4 +124,16 @@ function formatCount(n: number): string {
   if (n < 1000) return String(n)
   if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k'
   return (n / 1_000_000).toFixed(1) + 'M'
+}
+
+// Time-in-state for working/idle rows. Same shape as ageString in
+// swiftbar.ts — kept local to avoid the cross-import.
+function formatAge(ts: number, now: number): string {
+  if (!ts) return ''
+  const sec = Math.floor((now - ts) / 1000)
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m`
+  const hr = Math.floor(min / 60)
+  return `${hr}h ${min % 60}m`
 }

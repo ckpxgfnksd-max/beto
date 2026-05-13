@@ -39,12 +39,19 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
   const tierColor = TIER_COLOR[tier]
   const blockedFor = formatBlockedFor(row, now)
 
+  // Time-in-state. Working rows use just the time string — the green
+  // glyph already says "working", so we use the space for substance.
+  const ageBit = blockedFor || formatAge(row.lastTransitionAt, now)
   const tierBit =
     row.state === 'needs-input' && blockedFor
       ? `${tier} ${blockedFor}`
       : row.state === 'completed' && row.prUrl
         ? 'PR ready'
-        : row.state
+        : row.state === 'working'
+          ? ageBit || 'working'
+          : row.state === 'idle'
+            ? `idle ${ageBit}`.trim()
+            : row.state
 
   // Summary truncation budget. The leading row is ~22 chars of chrome
   // (cursor + slot + glyph + name + sigil + tier-bit + separators); the
@@ -78,8 +85,11 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
         <Text color={colorFor(row.harness)} bold>{sigilFor(row.harness)} </Text>
         <Text dimColor>· </Text>
         <Text color={row.state === 'needs-input' ? tierColor : stateColor}>{tierBit}</Text>
+        {row.tokensIn != null && row.tokensIn > 0 ? (
+          <Text dimColor>  · {formatCount(row.tokensIn)} in</Text>
+        ) : null}
         {row.tokensOut != null && row.tokensOut > 0 ? (
-          <Text dimColor>  · {formatCount(row.tokensOut)} out</Text>
+          <Text dimColor> · {formatCount(row.tokensOut)} out</Text>
         ) : null}
         {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
           <Text dimColor> · {row.tokenRateLast60s} tps</Text>
@@ -104,4 +114,14 @@ function formatCount(n: number): string {
   if (n < 1000) return String(n)
   if (n < 1_000_000) return (n / 1000).toFixed(1) + 'k'
   return (n / 1_000_000).toFixed(1) + 'M'
+}
+
+function formatAge(ts: number, now: number): string {
+  if (!ts) return ''
+  const sec = Math.floor((now - ts) / 1000)
+  if (sec < 60) return `${sec}s`
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m`
+  const hr = Math.floor(min / 60)
+  return `${hr}h ${min % 60}m`
 }
