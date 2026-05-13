@@ -101,6 +101,44 @@ That's not a flaw — macOS is where the primary user-base lives.
   binary). TS+Bun is what we have. v0.8 ships Bun-compiled static binaries; if
   install friction remains a complaint, revisit.
 
+## Roadmap → v0.9
+
+Captured at v0.8.0 cut (2026-05-13). The items below are *not* commitments —
+they are the candidates that surfaced during the v0.8 push and earned a
+"yes, post-launch" rather than a "no, never."
+
+1. **`sqlite-kv-json` adapter kind.** Cursor stores chat sessions in a
+   key-value SQLite (`~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`,
+   table `ItemTable`, JSON blobs under keys like `interactive.sessions`)
+   that the existing `sqlite-sessions-table` kind cannot model. Design the
+   new kind to let manifests declare `(db, table, key, jsonPathToSessions)`,
+   then ship a verified Cursor manifest with a real fixture under
+   `test/fixtures/cursor/`.
+2. **Kimi graduation.** v0.8 ships Kimi as `process-watch-only` (detection
+   only — see [`manifests/experimental/kimi.json`](../manifests/experimental/kimi.json)).
+   The per-session state is at `~/.kimi/sessions/<md5(cwd)>/<session_id>/`
+   (`state.json`, `context.jsonl`, `wire.jsonl`). Either extend
+   `directory-of-state-json` to support N-level discovery, or add a
+   `glob-of-state-json` kind. Then capture a real-session fixture and
+   move Kimi from `experimental/` to `manifests/`.
+3. **Community-PR invitations.** Open `good first issue` tickets requesting
+   manifests for: Cline (`cline/cline`), Roo Code (`RooCodeInc/Roo-Code`),
+   Jan, Continue.dev. Each ticket links the manifest spec and explains the
+   fixture requirement. Goal: hit the success-metric target of "1 third-
+   party manifest PR in the first 30 days" without prompting.
+4. **HuggingFace explicit non-goal.** smolagents, HuggingChat, Inference
+   Endpoints, and Spaces are all cloud-first or have no canonical local
+   session storage. beto cannot monitor what isn't on disk. Document this
+   in the manifest spec FAQ so the question stops recurring.
+5. **OpenClaw clarification.** OpenClaw is a Claude Code skill distribution
+   layer, not a separate harness — its users' sessions already land in
+   `~/.claude/jobs/` and are covered by the built-in Claude adapter. Add a
+   one-paragraph note to the README so the question stops recurring.
+6. **Native Swift menubar (conditional on adoption).** Per the strategy
+   posture, accelerate this only above 250 npm installs in 30 days.
+   SwiftBar is fine for the launch; native is a quality upgrade, not a
+   blocker.
+
 ## Versioning
 
 - **Beto:** SemVer. v0.x is pre-1.0; minor versions can break the manifest API

@@ -11,11 +11,12 @@ Do NOT cut the v0.8.0 tag until all of these are on `main`:
 - [x] PR #8 — v0.8 Obj 1: verified manifests + jsonl-index kind + strategy lock
 - [x] PR #9 — v0.8 Obj 3: zero-write CI proof
 - [x] PR #10 — v0.8 Obj 4: real install path
-- [ ] PR #11 — v0.8 follow-up: jsonl-index zero-write coverage
-- [ ] PR #12 — v0.8 Obj 2: OpenCode adapter (verified)
-- [ ] PR #13 — v0.8 Obj 5: npm publish prep
-- [ ] PR #14 — v0.8 Obj 6: README rewrite (live README replaced, not just draft)
-- [ ] (optional) abtop interop issue opened on `graykode/abtop`
+- [x] PR #11 — v0.8 follow-up: jsonl-index zero-write coverage
+- [x] PR #12 — v0.8 Obj 2: OpenCode adapter (verified)
+- [x] PR #13 — v0.8 Obj 5: npm publish prep
+- [x] PR #14 — v0.8 Obj 6: README rewrite (live README replaced, not just draft)
+- [x] PRs #15–#17 — v0.8 follow-ups: launch plan, status display, task summarizer
+- [ ] (held 14d post-launch) abtop interop issue on `graykode/abtop`
 
 When all checked: cut the tag, watch the release workflow build the
 three binaries, then run `npm publish`.
@@ -48,9 +49,9 @@ npm publish              # requires npm credentials
 ```
 
 `prepublishOnly` runs tsc + vitest + build inside the publish hook
-so a broken artifact can't slip out. Verified locally on PR #13:
-146 tests pass, dist/cli.js builds at 1.24 MB, npm pack dry-run
-ships 13 files at 263 KB.
+so a broken artifact can't slip out. Verified locally pre-tag
+(2026-05-13): 174 tests pass, `dist/cli.js` builds at 1248 KB,
+`npm pack --dry-run` ships 15 files at 265 KB.
 
 ## Success metrics
 
@@ -85,7 +86,8 @@ posting dilutes attention and makes attribution impossible to track.
 > and lose 20 minutes of flow.
 >
 > beto reads each harness's session data (zero hooks, no daemons —
-> verified in CI), surfaces blocked sessions with a 3-tier
+> proven by a CI test that fingerprints every harness data dir and
+> fails on a single byte of change), surfaces blocked sessions with a 3-tier
 > escalation ramp (gold/orange/red as wait time grows), and lives
 > in the macOS menubar via SwiftBar so you don't have to look.
 >
