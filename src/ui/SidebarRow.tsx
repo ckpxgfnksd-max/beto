@@ -9,6 +9,7 @@ import {
   TIER_COLOR,
 } from './theme.js'
 import { formatBlockedFor } from '../lib/needsInput.js'
+import { summarizeTask } from '../lib/summarize.js'
 
 interface Props {
   index: number
@@ -65,7 +66,7 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
         <Text color={cursor ? 'cyanBright' : undefined}>{cursorMark}</Text>
         <Text dimColor>[{slot}] </Text>
         <Text color={stateColor}>{STATE_GLYPH[row.state]} </Text>
-        <Text bold>{truncate(row.name, 10)}</Text>
+        <Text bold>{summarizeTask(row.name, { maxWords: 2, maxChars: 14 })}</Text>
         <Text color={colorFor(row.harness)}> {sigilFor(row.harness)}</Text>
         <Text color={row.state === 'needs-input' ? tierColor : stateColor}> {tierBit}</Text>
         {row.tokenRateLast60s != null && row.tokenRateLast60s > 0 ? (
@@ -81,7 +82,7 @@ export function SidebarRow({ index, row, tier, now, cursor, width, ultraCompact 
         <Text color={cursor ? 'cyanBright' : undefined}>{cursorMark}</Text>
         <Text dimColor>[{slot}] </Text>
         <Text color={stateColor}>{STATE_GLYPH[row.state]} </Text>
-        <Text bold>{truncate(row.name, 14).padEnd(14)}</Text>
+        <Text bold>{summarizeTask(row.name, { maxWords: 2, maxChars: 16 }).padEnd(16)}</Text>
         <Text color={colorFor(row.harness)} bold>{sigilFor(row.harness)} </Text>
         <Text dimColor>· </Text>
         <Text color={row.state === 'needs-input' ? tierColor : stateColor}>{tierBit}</Text>

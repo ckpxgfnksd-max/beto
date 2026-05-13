@@ -19,6 +19,7 @@ import type { EscalationTier, SessionSnapshot } from './types.js'
 import { deriveTier, formatBlockedFor } from './needsInput.js'
 import { groupRows } from '../store/inbox.js'
 import { sigilFor } from '../ui/theme.js'
+import { summarizeTask } from './summarize.js'
 
 // SF symbols + Unicode glyphs. SwiftBar renders Unicode reliably; SF
 // symbols need extra config so we stick with plain Unicode for v0.7.
@@ -168,7 +169,11 @@ function formatRow(row: SessionSnapshot, statusTail: string, color = ''): string
       ? ` · ${row.tokenRateLast60s} tps`
       : ''
   const glyph = STATE_GLYPH[row.state] ?? '·'
-  const name = truncate(row.name, 22).padEnd(22)
+  // Names get heuristically summarized to 1–2 content words so a long
+  // first-user message ("I want to build the MVP for...") shows as
+  // "Build MVP" rather than a head-truncated phrase. Already-short
+  // names (≤2 words) pass through unchanged.
+  const name = summarizeTask(row.name, { maxWords: 2, maxChars: 16 }).padEnd(16)
   const line = `${glyph} ${name} ${sigil} · ${statusTail}${tokIn}${tokOut}${tps}`
   const flags: string[] = ['font=Menlo']
   if (color) flags.push(`color=${color}`)

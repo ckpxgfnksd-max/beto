@@ -2,6 +2,7 @@ import React from 'react'
 import { Box, Text } from 'ink'
 import type { EscalationTier, SessionSnapshot } from '../lib/types.js'
 import { inferRole, ROLE_GLYPH, ROLE_SHORT } from '../lib/roles.js'
+import { summarizeTask } from '../lib/summarize.js'
 import {
   colorFor,
   sigilFor,
@@ -64,7 +65,7 @@ export function Row({ index, row, tier, now, cursor }: Props) {
         <Text color={cursor ? 'cyanBright' : undefined}>{cursorMark} </Text>
         <Text dimColor>[{slot}] </Text>
         <Text color={stateColor}>{STATE_GLYPH[row.state]} </Text>
-        <Text bold>{row.name}</Text>
+        <Text bold>{summarizeTask(row.name, { maxWords: 3, maxChars: 28 })}</Text>
         <Text color={colorFor(row.harness)} bold> {sigilFor(row.harness)}</Text>
         <Text dimColor> ({ROLE_GLYPH[role]} {ROLE_SHORT[role]}) </Text>
         <Text color={stateColor}>· {statusLine}</Text>
