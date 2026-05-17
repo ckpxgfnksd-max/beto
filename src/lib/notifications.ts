@@ -82,6 +82,24 @@ export class NotificationManager {
     if (opts.onColdStart) this.onColdStart = opts.onColdStart
   }
 
+  // Subscribe to the cold-start event. If the seed already happened
+  // before subscription, the subscriber is invoked immediately with the
+  // count we seeded. Returns an unsubscribe function.
+  subscribeColdStart(fn: (seededCount: number) => void): () => void {
+    if (this.coldStartFired) {
+      fn(this.coldStartSeededCount)
+      return () => {}
+    }
+    this.coldStartSubscribers.add(fn)
+    return () => {
+      this.coldStartSubscribers.delete(fn)
+    }
+  }
+
+  private coldStartFired = false
+  private coldStartSeededCount = 0
+  private readonly coldStartSubscribers = new Set<(n: number) => void>()
+
   // Call this with every merged registry emission. Returns the list of
   // notifications that were dispatched, mainly for testing.
   observe(rows: readonly SessionSnapshot[]): NotificationPayload[] {
@@ -103,7 +121,11 @@ export class NotificationManager {
           seeded += 1
         }
       }
+      this.coldStartFired = true
+      this.coldStartSeededCount = seeded
       if (this.onColdStart) this.onColdStart(seeded)
+      for (const fn of this.coldStartSubscribers) fn(seeded)
+      this.coldStartSubscribers.clear()
       // Cold-start tick fires no real notifications.
       return []
     }

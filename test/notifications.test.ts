@@ -34,6 +34,54 @@ function recordingDispatcher(): {
   }
 }
 
+describe('NotificationManager — subscribeColdStart', () => {
+  it('subscribers attached BEFORE observe receive the seed count', () => {
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: recordingDispatcher().fn,
+      now: () => 1000,
+      ledger,
+    })
+    const received: number[] = []
+    mgr.subscribeColdStart((n) => received.push(n))
+    mgr.observe([row({ state: 'needs-input' })])
+    expect(received).toEqual([1])
+  })
+
+  it('subscribers attached AFTER cold-start replay immediately', () => {
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: recordingDispatcher().fn,
+      now: () => 1000,
+      ledger,
+    })
+    mgr.observe([
+      row({ sessionId: 'a', state: 'needs-input' }),
+      row({ sessionId: 'b', state: 'needs-input' }),
+    ])
+    const received: number[] = []
+    mgr.subscribeColdStart((n) => received.push(n))
+    expect(received).toEqual([2])
+  })
+
+  it('subscribe returns an unsub that stops further notifications', () => {
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: recordingDispatcher().fn,
+      now: () => 1000,
+      ledger,
+    })
+    const received: number[] = []
+    const unsub = mgr.subscribeColdStart((n) => received.push(n))
+    unsub()
+    mgr.observe([row({ state: 'needs-input' })])
+    expect(received).toEqual([])
+  })
+})
+
 describe('NotificationManager — cold start (no prior ledger)', () => {
   it('silently seeds the ledger from already-blocked sessions; does NOT fire', () => {
     const rec = recordingDispatcher()
