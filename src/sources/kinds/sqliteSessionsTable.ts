@@ -17,8 +17,11 @@ import type { HarnessId, SessionSnapshot } from '../../lib/types.js'
 import { normalizeState } from '../state.js'
 import type {
   FieldMap,
+  SqliteJoinLatest,
   SqliteSessionsTableConfig,
+  StateInferenceRule,
 } from '../../lib/manifest.ts'
+import { applyStateInference } from '../stateInference.js'
 import { expandTilde } from './directoryOfStateJson.js'
 
 export interface SqliteSessionsTableOpts {
@@ -38,6 +41,8 @@ export class SqliteSessionsTableAdapter implements Adapter {
   private readonly fieldMap: FieldMap
   private readonly where: string | null
   private readonly limit: number
+  private readonly joinLatest: SqliteJoinLatest | null
+  private readonly stateInference?: readonly StateInferenceRule[]
   private readonly pollMs: number
   private readonly readBudgetMs: number
   private readonly now: () => number
@@ -54,6 +59,8 @@ export class SqliteSessionsTableAdapter implements Adapter {
     this.fieldMap = opts.config.fieldMap
     this.where = opts.config.where ?? null
     this.limit = opts.config.limit ?? 200
+    this.joinLatest = opts.config.joinLatest ?? null
+    this.stateInference = opts.config.stateInference
     this.pollMs = opts.pollMs ?? 2000
     this.readBudgetMs = opts.readBudgetMs ?? 1500
     this.now = opts.now ?? (() => Date.now())
@@ -99,6 +106,9 @@ export class SqliteSessionsTableAdapter implements Adapter {
 
     // Build a SELECT that aliases each fieldMap target to its
     // SessionSnapshot key, so the JSON output is already shaped correctly.
+    // We also include `*` so state-inference rules can reference any
+    // raw column by name (e.g. `time_compacting`) without each manifest
+    // having to declare them in fieldMap.
     const sql = this.buildSelect()
     let rows: unknown[]
     try {
@@ -107,9 +117,24 @@ export class SqliteSessionsTableAdapter implements Adapter {
       return this.lastEmitted
     }
 
+    // If the manifest declares a joinLatest sub-query, batch-load it
+    // for every session id we just selected and index by session id.
+    // One additional subprocess per scan, regardless of session count.
+    const sessionIds = collectSessionIds(rows)
+    let joinedById: Map<string, Record<string, unknown>> | null = null
+    if (this.joinLatest && sessionIds.length > 0) {
+      try {
+        joinedById = await this.fetchJoinLatest(sessionIds)
+      } catch {
+        // Sub-query failure shouldn't break the main scan; just skip
+        // inference for this tick.
+        joinedById = null
+      }
+    }
+
     const snapshots: SessionSnapshot[] = []
     for (const r of rows) {
-      const snap = this.toSnapshot(r)
+      const snap = this.toSnapshot(r, joinedById)
       if (snap) snapshots.push(snap)
     }
     snapshots.sort(
@@ -134,24 +159,70 @@ export class SqliteSessionsTableAdapter implements Adapter {
     if (fm.prUrl) cols.push(['prUrl', fm.prUrl])
     if (fm.prCheckStatus) cols.push(['prCheckStatus', fm.prCheckStatus])
     if (fm.cwd) cols.push(['cwd', fm.cwd])
-    const selectClause = cols
+    const aliasClause = cols
       .map(([alias, src]) => `"${src}" AS "${alias}"`)
       .join(', ')
     const where = this.where ? ` WHERE ${this.where}` : ''
-    return `SELECT ${selectClause} FROM "${this.table}"${where} LIMIT ${this.limit}`
+    return `SELECT *, ${aliasClause} FROM "${this.table}"${where} LIMIT ${this.limit}`
   }
 
-  private toSnapshot(raw: unknown): SessionSnapshot | null {
+  // Run the manifest-declared joinLatest sub-query with :sessionIds
+  // substituted to a comma-separated quoted list. Returns a map keyed
+  // by the joined row's session id (column `joinLatest.keyAs`, default
+  // `session_id`). Only the FIRST row encountered per session id is
+  // kept — the manifest's ORDER BY decides which one wins.
+  private async fetchJoinLatest(
+    sessionIds: readonly string[],
+  ): Promise<Map<string, Record<string, unknown>>> {
+    if (!this.joinLatest) return new Map()
+    const idList = sessionIds.map(escapeSqlString).join(',')
+    const sql = this.joinLatest.sql.replace(/:sessionIds\b/g, idList)
+    const rows = await runSqliteJson(this.dbPath, sql, this.readBudgetMs)
+    const keyCol = this.joinLatest.keyAs ?? 'session_id'
+    const out = new Map<string, Record<string, unknown>>()
+    for (const r of rows) {
+      if (!r || typeof r !== 'object') continue
+      const obj = r as Record<string, unknown>
+      const key = asString(obj[keyCol])
+      if (!key) continue
+      if (!out.has(key)) out.set(key, obj)
+    }
+    return out
+  }
+
+  private toSnapshot(
+    raw: unknown,
+    joinedById: Map<string, Record<string, unknown>> | null,
+  ): SessionSnapshot | null {
     if (!raw || typeof raw !== 'object') return null
     const o = raw as Record<string, unknown>
     const sessionId = typeof o.sessionId === 'string' ? o.sessionId : String(o.sessionId ?? '')
     if (!sessionId) return null
     const rawState = typeof o.state === 'string' ? o.state : String(o.state ?? '')
+
+    // State precedence:
+    //   1. Explicit mapped `state` column (set via fieldMap.state).
+    //   2. Declarative stateInference rules (with joined sub-query data
+    //      under joinLatest.as scope).
+    //   3. Fallback: normalizeState('') → 'unknown'.
+    let state = normalizeState(rawState)
+    if (!rawState && this.stateInference && this.stateInference.length > 0) {
+      const joinedRow = joinedById?.get(sessionId) ?? null
+      const scopes: Record<string, Record<string, unknown> | null> = { session: o }
+      if (this.joinLatest) scopes[this.joinLatest.as] = joinedRow
+      const inferred = applyStateInference(this.stateInference, scopes, {
+        now: this.now(),
+        lastTransitionAt: asNumber(o.lastTransitionAt) || 0,
+        defaultScope: 'session',
+      })
+      if (inferred) state = inferred
+    }
+
     return {
       harness: this.id,
       sessionId,
       name: asString(o.name) || (sessionId.length > 8 ? sessionId.slice(0, 8) : sessionId),
-      state: normalizeState(rawState),
+      state,
       summary: asString(o.summary),
       lastTransitionAt: asNumber(o.lastTransitionAt) || 0,
       processAlive: asBool(o.processAlive) ?? true,
@@ -161,6 +232,28 @@ export class SqliteSessionsTableAdapter implements Adapter {
       rawStateString: rawState,
     }
   }
+}
+
+function collectSessionIds(rows: unknown[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const r of rows) {
+    if (!r || typeof r !== 'object') continue
+    const sid = (r as Record<string, unknown>).sessionId
+    const s = typeof sid === 'string' ? sid : String(sid ?? '')
+    if (!s || seen.has(s)) continue
+    seen.add(s)
+    out.push(s)
+  }
+  return out
+}
+
+// SQLite string literal: wrap in single quotes, double up embedded
+// single quotes. Defensive against injection via session ids; the data
+// originates from the harness's own db so it's already trusted, but
+// "trusted input" is exactly how injections happen.
+function escapeSqlString(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`
 }
 
 // Run `sqlite3 <db> -json <sql>`. Resolves with the parsed rows array
