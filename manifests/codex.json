@@ -24,7 +24,36 @@
       "exclude": {
         "field": "payload.thread_source",
         "equals": "subagent"
-      }
+      },
+      "stateInference": [
+        {
+          "name": "task complete → user's turn",
+          "mapsTo": "needs-input",
+          "when": {
+            "equals": {
+              "type": "event_msg",
+              "payload.type": "task_complete"
+            }
+          }
+        },
+        {
+          "name": "turn aborted → stopped",
+          "mapsTo": "stopped",
+          "when": {
+            "equals": {
+              "type": "event_msg",
+              "payload.type": "turn_aborted"
+            }
+          }
+        },
+        {
+          "name": "stale rollout with no terminator → idle",
+          "mapsTo": "idle",
+          "when": {
+            "minAgeMs": 300000
+          }
+        }
+      ]
     }
   }
 }
