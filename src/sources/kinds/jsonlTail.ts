@@ -38,6 +38,12 @@ import type { Adapter } from '../adapter.js'
 import type { HarnessId, SessionSnapshot } from '../../lib/types.js'
 import { normalizeState } from '../state.js'
 import type { FieldMap, JsonlTailConfig } from '../../lib/manifest.ts'
+import {
+  readDotted,
+  readDottedString,
+  readDottedTimestamp,
+  toStringOrEmpty,
+} from '../dotted.js'
 import { expandTilde } from './directoryOfStateJson.js'
 
 export interface JsonlTailOpts {
@@ -383,39 +389,6 @@ function globSegmentToRegex(seg: string): RegExp {
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
     .replace(/\*/g, '.*')
   return new RegExp('^' + escaped + '$')
-}
-
-// Walk a dotted path through nested objects. `payload.cwd` → obj.payload.cwd.
-// Flat keys still resolve normally because split('.') with no dot yields [key].
-function readDotted(obj: Record<string, unknown>, dottedKey: string): unknown {
-  if (!dottedKey) return undefined
-  const parts = dottedKey.split('.')
-  let cur: unknown = obj
-  for (const p of parts) {
-    if (cur == null || typeof cur !== 'object') return undefined
-    cur = (cur as Record<string, unknown>)[p]
-  }
-  return cur
-}
-
-function readDottedString(obj: Record<string, unknown>, dottedKey: string): string {
-  return toStringOrEmpty(readDotted(obj, dottedKey))
-}
-
-function toStringOrEmpty(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
-}
-
-// Timestamps may be ISO 8601 strings (Codex's `timestamp`) or numeric
-// ms-since-epoch. Normalize either form to ms.
-function readDottedTimestamp(obj: Record<string, unknown>, dottedKey: string): number {
-  const v = readDotted(obj, dottedKey)
-  if (typeof v === 'number' && Number.isFinite(v)) return v
-  if (typeof v === 'string') {
-    const parsed = Date.parse(v)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return 0
 }
 
 function extractUuidFromFilename(filePath: string): string {
