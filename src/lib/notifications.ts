@@ -15,6 +15,10 @@
 
 import { spawn } from 'node:child_process'
 import type { SessionSnapshot, SessionState } from './types.js'
+import {
+  FileNotificationLedger,
+  type NotificationLedger,
+} from './notificationLedger.js'
 
 export interface NotificationOptions {
   // Master switch. Default: true on macOS/Linux, false on Windows.
@@ -30,6 +34,16 @@ export interface NotificationOptions {
   dispatcher?: NotificationDispatcher
   // Override for tests / "first emission shouldn't trigger" semantics.
   now?: () => number
+  // Persistent ledger of (harness, sessionId) keys we've already
+  // notified the user about. When omitted, a FileNotificationLedger
+  // backed by ~/.beto/state/notifications.json is created — that's
+  // the production path. Tests pass MemoryNotificationLedger.
+  ledger?: NotificationLedger
+  // Called exactly once on the first observe() when the ledger was
+  // cold (no prior file). Receives the number of already-blocked
+  // sessions that were silently seeded. UI subscribes to surface a
+  // "Seeded N pre-existing blocked sessions" hint in the status bar.
+  onColdStart?: (seededCount: number) => void
 }
 
 export interface NotificationPayload {
@@ -46,12 +60,16 @@ export class NotificationManager {
   private readonly throttleMs: number
   private readonly dispatch: NotificationDispatcher
   private readonly now: () => number
+  private readonly ledger: NotificationLedger
+  private readonly onColdStart?: (seededCount: number) => void
 
   // Session state at last emission. Absent → never seen. Used to detect
   // transitions: only ID + state are tracked.
   private readonly lastState = new Map<string, SessionState>()
-  // When we last fired a notification for a given session, for throttling.
-  private readonly lastFiredAt = new Map<string, number>()
+  // True until the first observe() consumes the cold-start case (i.e.
+  // ledger was missing on disk). On that first call we silently seed
+  // the ledger with currently-blocked sessions instead of firing.
+  private coldStartPending: boolean
 
   constructor(opts: NotificationOptions = {}) {
     this.enabled = opts.enabled ?? defaultEnabled()
@@ -59,40 +77,86 @@ export class NotificationManager {
     this.throttleMs = opts.throttleMs ?? 30_000
     this.dispatch = opts.dispatcher ?? platformDispatcher()
     this.now = opts.now ?? (() => Date.now())
+    this.ledger = opts.ledger ?? new FileNotificationLedger()
+    this.coldStartPending = this.ledger.coldStart
+    if (opts.onColdStart) this.onColdStart = opts.onColdStart
   }
 
   // Call this with every merged registry emission. Returns the list of
   // notifications that were dispatched, mainly for testing.
   observe(rows: readonly SessionSnapshot[]): NotificationPayload[] {
+    const now = this.now()
+
+    // Cold-start path: ledger file didn't exist when beto launched.
+    // Silently seed the ledger with currently-needs-input sessions and
+    // emit one onColdStart event. We DO record prev state so the next
+    // tick's transitions can be detected normally.
+    if (this.coldStartPending) {
+      this.coldStartPending = false
+      let seeded = 0
+      for (const row of rows) {
+        const k = this.key(row)
+        this.lastState.set(k, row.state)
+        if (row.state === 'needs-input') {
+          this.ledger.markNotified(k, now)
+          this.ledger.markObserved(k, now)
+          seeded += 1
+        }
+      }
+      if (this.onColdStart) this.onColdStart(seeded)
+      // Cold-start tick fires no real notifications.
+      return []
+    }
+
     if (!this.enabled) {
       // Still track state so flipping enabled mid-run doesn't re-fire
       // for sessions we already saw.
       for (const row of rows) {
-        this.lastState.set(this.key(row), row.state)
+        const k = this.key(row)
+        this.lastState.set(k, row.state)
+        this.ledger.markObserved(k, now)
       }
       return []
     }
 
     const fired: NotificationPayload[] = []
-    const now = this.now()
 
     for (const row of rows) {
       const k = this.key(row)
       const prev = this.lastState.get(k)
       this.lastState.set(k, row.state)
+      this.ledger.markObserved(k, now)
 
-      // Only fire on a real transition INTO needs-input. The first time
-      // we see a session counts as "no prior state" — we don't fire on
-      // already-blocked sessions when beto launches, only on fresh
-      // transitions thereafter.
-      const isFreshTransition =
-        row.state === 'needs-input' && prev !== undefined && prev !== 'needs-input'
-      if (!isFreshTransition) continue
+      // Leaving needs-input clears the ledger entry so the NEXT
+      // re-block fires a fresh notification.
+      if (row.state !== 'needs-input') {
+        if (this.ledger.hasNotified(k)) this.ledger.clearNotified(k)
+        continue
+      }
 
-      const lastTime = this.lastFiredAt.get(k)
-      if (lastTime !== undefined && now - lastTime < this.throttleMs) continue
-      this.lastFiredAt.set(k, now)
+      // row.state === 'needs-input'. Fire if either:
+      //   (a) live transition: we saw a non-needs-input prev state
+      //       this same process and now it flipped to needs-input.
+      //   (b) startup-discovery: prev is undefined (first time seeing
+      //       this session in-process) AND the ledger doesn't already
+      //       know about it. This catches sessions that transitioned
+      //       while beto was off — the gap the cold-start ledger fix
+      //       closes.
+      const isLiveTransition = prev !== undefined && prev !== 'needs-input'
+      const isFreshStartupDiscovery = prev === undefined && !this.ledger.hasNotified(k)
+      if (!isLiveTransition && !isFreshStartupDiscovery) continue
 
+      // Throttle: don't re-fire for the same key within throttleMs.
+      // Use ledger.lastFiredMs proxied via hasNotified + an inline
+      // sentinel: we rely on clearNotified/markNotified for the
+      // happy paths, so the only remaining throttle case is "lived
+      // through a flicker faster than throttleMs." Track in-process
+      // via lastFiredInProc to avoid persisting noise.
+      const lastInProc = this.lastFiredInProc.get(k)
+      if (lastInProc !== undefined && now - lastInProc < this.throttleMs) continue
+      this.lastFiredInProc.set(k, now)
+
+      this.ledger.markNotified(k, now)
       const payload = this.build(row)
       fired.push(payload)
       // Dispatch async; don't await — beto's render loop must not block
@@ -100,7 +164,22 @@ export class NotificationManager {
       void this.dispatch(payload)
     }
 
+    // GC ledger on every tick — cheap, keeps the file bounded.
+    this.ledger.gc(now)
+
     return fired
+  }
+
+  // In-process throttle state (separate from the on-disk ledger,
+  // which only knows "we've ever told the user about this"). This
+  // map handles the flicker case: blocked→working→blocked within
+  // 30s shouldn't double-notify even though clearNotified() emptied
+  // the ledger entry.
+  private readonly lastFiredInProc = new Map<string, number>()
+
+  // Flush any pending ledger writes. Call from process shutdown.
+  async flush(): Promise<void> {
+    await this.ledger.flush()
   }
 
   private key(row: SessionSnapshot): string {
