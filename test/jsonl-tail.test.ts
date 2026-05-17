@@ -210,6 +210,192 @@ describe('JsonlTailAdapter — Codex rollout shape', () => {
     expect(rows.map((r) => r.sessionId)).toEqual(['nested'])
   })
 
+  it('maps tail event_msg/task_complete → needs-input via stateInference', async () => {
+    const dir = await tempDir()
+    const NOW = 1_800_000_000_000
+    const file = path.join(
+      dir,
+      'rollout-2026-05-17T10-29-50-019e350e-4f09-71e3-b0ea-c48f4903cb50.jsonl',
+    )
+    const lines = [
+      {
+        timestamp: new Date(NOW - 5000).toISOString(),
+        type: 'session_meta',
+        payload: { id: 'sess-needs', cwd: '/x', originator: 'Codex' },
+      },
+      // response_item streaming
+      {
+        timestamp: new Date(NOW - 4000).toISOString(),
+        type: 'response_item',
+        payload: { content: [{ type: 'text', text: 'thinking...' }] },
+      },
+      // Terminator: task_complete means the agent finished its turn.
+      {
+        timestamp: new Date(NOW - 100).toISOString(),
+        type: 'event_msg',
+        payload: { type: 'task_complete' },
+      },
+    ]
+    await fs.writeFile(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+
+    const adapter = new JsonlTailAdapter({
+      id: 'codex',
+      displayName: 'Codex',
+      config: {
+        fileGlob: path.join(dir, '*.jsonl'),
+        fieldMap: { sessionId: 'payload.id', lastTransitionAt: 'timestamp' },
+        headFieldMap: { sessionId: 'payload.id' },
+        stateInference: [
+          {
+            name: 'task complete',
+            mapsTo: 'needs-input',
+            when: { equals: { type: 'event_msg', 'payload.type': 'task_complete' } },
+          },
+        ],
+      },
+      now: () => NOW,
+    })
+    const rows = await adapter.scan()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.sessionId).toBe('sess-needs')
+    expect(rows[0]!.state).toBe('needs-input')
+  })
+
+  it('maps tail event_msg/turn_aborted → stopped via stateInference', async () => {
+    const dir = await tempDir()
+    const NOW = 1_800_000_000_000
+    const file = path.join(
+      dir,
+      'rollout-2026-05-17T10-29-50-019e350e-4f09-71e3-b0ea-c48f4903cb51.jsonl',
+    )
+    const lines = [
+      {
+        timestamp: new Date(NOW - 5000).toISOString(),
+        type: 'session_meta',
+        payload: { id: 'sess-stop' },
+      },
+      {
+        timestamp: new Date(NOW - 200).toISOString(),
+        type: 'event_msg',
+        payload: { type: 'turn_aborted' },
+      },
+    ]
+    await fs.writeFile(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+
+    const adapter = new JsonlTailAdapter({
+      id: 'codex',
+      displayName: 'Codex',
+      config: {
+        fileGlob: path.join(dir, '*.jsonl'),
+        fieldMap: { sessionId: 'payload.id', lastTransitionAt: 'timestamp' },
+        headFieldMap: { sessionId: 'payload.id' },
+        stateInference: [
+          {
+            mapsTo: 'needs-input',
+            when: { equals: { 'payload.type': 'task_complete' } },
+          },
+          {
+            mapsTo: 'stopped',
+            when: { equals: { 'payload.type': 'turn_aborted' } },
+          },
+        ],
+      },
+      now: () => NOW,
+    })
+    const rows = await adapter.scan()
+    expect(rows[0]!.state).toBe('stopped')
+  })
+
+  it('in-flight stream (no terminator) stays working via age fallback', async () => {
+    const dir = await tempDir()
+    const NOW = 1_800_000_000_000
+    const file = path.join(
+      dir,
+      'rollout-2026-05-17T10-29-50-019e350e-4f09-71e3-b0ea-c48f4903cb52.jsonl',
+    )
+    const lines = [
+      {
+        timestamp: new Date(NOW - 5000).toISOString(),
+        type: 'session_meta',
+        payload: { id: 'sess-flight' },
+      },
+      // Mid-stream response_item with no task_complete after it.
+      {
+        timestamp: new Date(NOW - 100).toISOString(),
+        type: 'response_item',
+        payload: { content: [{ type: 'text', text: 'still thinking' }] },
+      },
+    ]
+    await fs.writeFile(file, lines.map((l) => JSON.stringify(l)).join('\n') + '\n')
+
+    const adapter = new JsonlTailAdapter({
+      id: 'codex',
+      displayName: 'Codex',
+      config: {
+        fileGlob: path.join(dir, '*.jsonl'),
+        fieldMap: { sessionId: 'payload.id', lastTransitionAt: 'timestamp' },
+        headFieldMap: { sessionId: 'payload.id' },
+        stateInference: [
+          {
+            mapsTo: 'needs-input',
+            when: { equals: { 'payload.type': 'task_complete' } },
+          },
+        ],
+      },
+      now: () => NOW,
+    })
+    const rows = await adapter.scan()
+    expect(rows[0]!.state).toBe('working')
+  })
+
+  it('stale rollout (5+ min) with no terminator falls back to idle via minAgeMs rule', async () => {
+    const dir = await tempDir()
+    const NOW = 1_800_000_000_000
+    const file = path.join(
+      dir,
+      'rollout-2026-05-17T10-29-50-019e350e-4f09-71e3-b0ea-c48f4903cb53.jsonl',
+    )
+    const ts = new Date(NOW - 10 * 60 * 1000).toISOString()
+    await writeFileWithMtime(
+      file,
+      JSON.stringify({
+        timestamp: ts,
+        type: 'session_meta',
+        payload: { id: 'sess-stale' },
+      }) +
+        '\n' +
+        JSON.stringify({
+          timestamp: ts,
+          type: 'response_item',
+          payload: { content: [] },
+        }),
+      NOW - 10 * 60 * 1000,
+    )
+
+    const adapter = new JsonlTailAdapter({
+      id: 'codex',
+      displayName: 'Codex',
+      config: {
+        fileGlob: path.join(dir, '*.jsonl'),
+        fieldMap: { sessionId: 'payload.id', lastTransitionAt: 'timestamp' },
+        headFieldMap: { sessionId: 'payload.id' },
+        stateInference: [
+          {
+            mapsTo: 'needs-input',
+            when: { equals: { 'payload.type': 'task_complete' } },
+          },
+          {
+            mapsTo: 'idle',
+            when: { minAgeMs: 5 * 60 * 1000 },
+          },
+        ],
+      },
+      now: () => NOW,
+    })
+    const rows = await adapter.scan()
+    expect(rows[0]!.state).toBe('idle')
+  })
+
   it('drops files with no parseable lines but never throws', async () => {
     const dir = await tempDir()
     await fs.writeFile(path.join(dir, 'a.jsonl'), 'not json\n{also broken\n')
