@@ -12,8 +12,8 @@ Two tiers:
 | Manifest | Adapter kind | Verified against |
 |----------|--------------|------------------|
 | Claude Code *(built-in adapter, not via manifest)* | n/a | 122 real sessions on developer machine (2026-05-12) |
-| `codex.json` | `jsonl-index` | 16 real sessions in `~/.codex/session_index.jsonl` (2026-05-12) |
-| `opencode.json` | `sqlite-sessions-table` | `~/.local/share/opencode/opencode.db` schema confirmed against opencode-ai v1.14.48 (2026-05-12). `session` table (singular), `time_updated` in ms epoch. |
+| `codex.json` | `jsonl-tail` + `stateInference` | 24 real rollouts in `~/.codex/sessions/**/rollout-*.jsonl` (2026-05-17). `event_msg / task_complete` → `needs-input`, `turn_aborted` → `stopped`, 5min stale → `idle`. |
+| `opencode.json` | `sqlite-sessions-table` + `joinLatest` | `~/.local/share/opencode/opencode.db` schema against opencode-ai v1.14.48 (2026-05-12). Latest `message` row's role + `data.time.completed` drives needs-input / working / failed. |
 
 ## Experimental (opt-in only)
 
@@ -42,4 +42,5 @@ See [`../docs/manifest-spec.md`](../docs/manifest-spec.md) for the full spec. Th
 1. Find where the harness writes session data (look in `~/.<harness-id>/`, `~/.local/share/<harness-id>/`, or `~/.config/<harness-id>/`).
 2. Pick the adapter kind that fits: `directory-of-state-json`, `sqlite-sessions-table`, `jsonl-tail`, `jsonl-index`, or `process-watch-only`.
 3. Map the harness's native field names to beto's normalized session shape via `fieldMap`.
-4. Drop the JSON in `~/.beto/plugins/<harness-id>.json` to test, then PR to `manifests/` (verified) or `manifests/experimental/` (best-effort).
+4. If the harness has no explicit `state` column/field, declare `stateInference` rules over its tail events / latest message — see the Codex and OpenCode manifests for working templates.
+5. Drop the JSON in `~/.beto/plugins/<harness-id>.json` to test, then PR to `manifests/` (verified) or `manifests/experimental/` (best-effort).
