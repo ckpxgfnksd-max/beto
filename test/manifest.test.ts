@@ -162,4 +162,216 @@ describe('validateManifest', () => {
     expect(r.manifest?.color).toBe('magenta')
     expect(r.manifest?.versionFlag).toBe('-V')
   })
+
+  // ── stateInference ─────────────────────────────────────────────────
+
+  it('accepts jsonl-tail with stateInference rules (Codex shape)', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-tail',
+          config: {
+            fileGlob: '~/.codex/sessions/**/rollout-*.jsonl',
+            fieldMap: { sessionId: 'payload.id', lastTransitionAt: 'timestamp' },
+            stateInference: [
+              {
+                name: 'task complete → user turn',
+                mapsTo: 'needs-input',
+                when: {
+                  equals: { type: 'event_msg', 'payload.type': 'task_complete' },
+                  against: 'tail',
+                },
+              },
+              {
+                mapsTo: 'stopped',
+                when: { equals: { 'payload.type': 'turn_aborted' } },
+              },
+            ],
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(true)
+    expect(r.manifest?.adapter.kind).toBe('jsonl-tail')
+    if (r.manifest?.adapter.kind === 'jsonl-tail') {
+      expect(r.manifest.adapter.config.stateInference).toHaveLength(2)
+      expect(r.manifest.adapter.config.stateInference?.[0]?.mapsTo).toBe('needs-input')
+    }
+  })
+
+  it('rejects stateInference rule with unknown mapsTo', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-tail',
+          config: {
+            fileGlob: '~/.foo/*.jsonl',
+            fieldMap: { sessionId: 'id' },
+            stateInference: [{ mapsTo: 'made-up', when: { equals: { t: 'x' } } }],
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.path.endsWith('mapsTo'))).toBe(true)
+  })
+
+  it('rejects stateInference rule without when block', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-tail',
+          config: {
+            fileGlob: '~/.foo/*.jsonl',
+            fieldMap: { sessionId: 'id' },
+            stateInference: [{ mapsTo: 'needs-input' }],
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.path.endsWith('.when'))).toBe(true)
+  })
+
+  it('rejects stateInference rule with non-string equals value', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-tail',
+          config: {
+            fileGlob: '~/.foo/*.jsonl',
+            fieldMap: { sessionId: 'id' },
+            stateInference: [
+              { mapsTo: 'needs-input', when: { equals: { 'payload.type': 42 } } },
+            ],
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.path.includes('equals'))).toBe(true)
+  })
+
+  // ── joinLatest (sqlite) ────────────────────────────────────────────
+
+  it('accepts sqlite-sessions-table with joinLatest + stateInference (OpenCode shape)', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'sqlite-sessions-table',
+          config: {
+            dbPath: '~/.local/share/opencode/opencode.db',
+            table: 'session',
+            fieldMap: { sessionId: 'id', name: 'title', lastTransitionAt: 'time_updated' },
+            joinLatest: {
+              as: 'latestMessage',
+              sql:
+                "SELECT type, session_id, json_extract(data,'$.time.completed') AS completed_at " +
+                'FROM session_message WHERE session_id IN (:sessionIds) ' +
+                'GROUP BY session_id ORDER BY time_created DESC',
+            },
+            stateInference: [
+              {
+                mapsTo: 'needs-input',
+                when: {
+                  equals: { 'latestMessage.type': 'assistant' },
+                  present: ['latestMessage.completed_at'],
+                },
+              },
+            ],
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(true)
+    if (r.manifest?.adapter.kind === 'sqlite-sessions-table') {
+      expect(r.manifest.adapter.config.joinLatest?.as).toBe('latestMessage')
+      expect(r.manifest.adapter.config.stateInference).toHaveLength(1)
+    }
+  })
+
+  it('rejects joinLatest without :sessionIds placeholder', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'sqlite-sessions-table',
+          config: {
+            dbPath: '~/.x.db',
+            table: 'session',
+            fieldMap: { sessionId: 'id' },
+            joinLatest: {
+              as: 'latestMessage',
+              sql: 'SELECT * FROM session_message',
+            },
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.message.includes(':sessionIds'))).toBe(true)
+  })
+
+  it('rejects joinLatest with embedded semicolon (multi-statement attempt)', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'sqlite-sessions-table',
+          config: {
+            dbPath: '~/.x.db',
+            table: 'session',
+            fieldMap: { sessionId: 'id' },
+            joinLatest: {
+              as: 'latestMessage',
+              sql:
+                'SELECT * FROM session_message WHERE session_id IN (:sessionIds); DROP TABLE session',
+            },
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.message.includes('single statement'))).toBe(true)
+  })
+
+  it('rejects joinLatest that is not a SELECT', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'sqlite-sessions-table',
+          config: {
+            dbPath: '~/.x.db',
+            table: 'session',
+            fieldMap: { sessionId: 'id' },
+            joinLatest: {
+              as: 'latestMessage',
+              sql: 'DELETE FROM session_message WHERE session_id IN (:sessionIds)',
+            },
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.message.includes('SELECT'))).toBe(true)
+  })
+
+  it('rejects joinLatest with bad `as` identifier', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'sqlite-sessions-table',
+          config: {
+            dbPath: '~/.x.db',
+            table: 'session',
+            fieldMap: { sessionId: 'id' },
+            joinLatest: {
+              as: 'Bad Name!',
+              sql: 'SELECT * FROM session_message WHERE session_id IN (:sessionIds)',
+            },
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.path.endsWith('.as'))).toBe(true)
+  })
 })
