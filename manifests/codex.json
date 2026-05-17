@@ -8,13 +8,22 @@
   "pollMs": 2000,
   "readBudgetMs": 1500,
   "adapter": {
-    "kind": "jsonl-index",
+    "kind": "jsonl-tail",
     "config": {
-      "filePath": "~/.codex/session_index.jsonl",
+      "fileGlob": "~/.codex/sessions/**/rollout-*.jsonl",
+      "tailLines": 8,
       "fieldMap": {
-        "sessionId": "id",
-        "name": "thread_name",
-        "lastTransitionAt": "updated_at"
+        "sessionId": "payload.id",
+        "lastTransitionAt": "timestamp"
+      },
+      "headFieldMap": {
+        "sessionId": "payload.id",
+        "cwd": "payload.cwd",
+        "name": "payload.originator"
+      },
+      "exclude": {
+        "field": "payload.thread_source",
+        "equals": "subagent"
       }
     }
   }

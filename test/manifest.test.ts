@@ -69,6 +69,45 @@ describe('validateManifest', () => {
     expect(r.ok).toBe(true)
   })
 
+  it('accepts jsonl-tail with headFieldMap and exclude (Codex shape)', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-tail',
+          config: {
+            fileGlob: '~/.codex/sessions/**/rollout-*.jsonl',
+            fieldMap: { sessionId: 'payload.id', lastTransitionAt: 'timestamp' },
+            headFieldMap: {
+              sessionId: 'payload.id',
+              cwd: 'payload.cwd',
+              name: 'payload.originator',
+            },
+            exclude: { field: 'payload.thread_source', equals: 'subagent' },
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(true)
+    expect(r.manifest?.adapter.kind).toBe('jsonl-tail')
+  })
+
+  it('rejects jsonl-tail exclude missing required fields', () => {
+    const r = validateManifest(
+      valid({
+        adapter: {
+          kind: 'jsonl-tail',
+          config: {
+            fileGlob: '~/.foo/*.jsonl',
+            fieldMap: { sessionId: 'id' },
+            exclude: { field: 'thread_source' },
+          },
+        },
+      }),
+    )
+    expect(r.ok).toBe(false)
+    expect(r.errors.some((e) => e.path.includes('exclude.equals'))).toBe(true)
+  })
+
   it('accepts a valid jsonl-index manifest', () => {
     const r = validateManifest(
       valid({

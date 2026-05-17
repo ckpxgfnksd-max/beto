@@ -1,11 +1,14 @@
 
 # beto
 
+[![CI](https://github.com/ckpxgfnksd-max/beto/actions/workflows/ci.yml/badge.svg)](https://github.com/ckpxgfnksd-max/beto/actions/workflows/ci.yml)
+[![zero-write CI](https://github.com/ckpxgfnksd-max/beto/actions/workflows/zero-write.yml/badge.svg)](https://github.com/ckpxgfnksd-max/beto/actions/workflows/zero-write.yml)
+
 **Your most expensive resource is attention. Stuck agents waste it.**
 
 You launch a Claude Code session, switch to another window, come back twenty minutes later and find the agent stalled five minutes in — silently waiting on a question you'd have answered in seconds. Multiply by ten parallel sessions across Claude, Codex, OpenCode, and the rest. Most of your "agent productivity" is actually you context-switching to discover blocked agents.
 
-**beto is the inbox that surfaces stuck agents before you go looking.** Live in the macOS menubar or a terminal pane; one glance shows you which sessions need you right now, color-coded by how long they've been waiting.
+**beto is the inbox that surfaces stuck agents before you go looking.** Live in the macOS menubar or a terminal pane; one glance shows you which sessions need you right now, color-coded by how long they've been waiting — **gold under 60 seconds, orange at 1–5 minutes, red past 5 minutes**.
 
 ```
 beto · 8 sessions · 3 need you
@@ -28,13 +31,21 @@ The three-tier escalation ramp is **universal across every harness** beto suppor
 
 ## How beto compares
 
-| | beto | [abtop](https://github.com/graykode/abtop) |
-|--|------|------|
-| **Surface** | Inbox metaphor + 3-tier escalation · TUI + macOS menubar + OS notification | htop-style dashboard · TUI only |
-| **Harness model** | [Plugin-manifest spec](manifest-spec.md) — any harness via one JSON file | Hardcoded — Claude / Codex / OpenCode only |
-| **Verification** | Manifests checked against real installs; fixture-snapshot CI; [zero-write proof](../test/zero-write.test.ts) | Read-only by stated posture |
+beto's design space sits at the intersection of four properties no other project in the top tier occupies simultaneously: **multi-harness coverage**, **time-based escalation**, **zero outbound HTTP**, and a **CI-enforced zero-write proof**. The table below names each direct comparator the [2026-05-17 competitive survey](../../../.claude/contexts/survey_sessions/beto_competitors_2026_05_17.md) verified at the code level.
 
-Both projects are zero-install on the agent host. The choice is between the **stuck-agent inbox** (beto) and the **everything-dashboard** (abtop). They're not mutually exclusive — many users run both.
+| | beto | [Anthropic Agent View](https://code.claude.com/docs/en/agent-view) | [hoangsonww](https://github.com/hoangsonww/Claude-Code-Agent-Monitor) | [claudecodeui](https://github.com/siteboon/claudecodeui) | [abtop](https://github.com/graykode/abtop) |
+|--|------|------|------|------|------|
+| **Surface** | TUI + macOS menubar + OS notification | In-CC TUI subcommand | Web Kanban + PWA | Web + Mobile UI | Rust TUI dashboard |
+| **Harnesses** | Claude · Codex · OpenCode (+ any via [manifest spec](manifest-spec.md)) | Claude Code only | Claude Code only | Claude · Cursor · Codex · Gemini | Claude · Codex · OpenCode (hardcoded) |
+| **Time-tier escalation** | **3-tier: gold `<60s` / orange `1–5m` / red `5m+`** | Single "Needs input" group, no time bands | Single yellow `awaiting_input_since` badge | Active-session list, no stuck concept | htop-style metrics, no stuck concept |
+| **Cross-repo / cross-cwd grouping** | v0.9 target | ❌ ([HN cadl11](https://news.ycombinator.com/item?id=48124057): "messy session lists across multiple repos") | ❌ | ❌ | ❌ |
+| **Dispatch permission granularity** | v0.9 target | ❌ ("cannot specify permissions when dispatching") | Inherits CC | Inherits CC | n/a (read-only) |
+| **Persists after CC sleeps** | ✅ (mtime-driven, re-aggregates on wake) | ❌ ("sessions are local and stop if the machine sleeps") | localhost server | self-hosted server | ✅ |
+| **Writes `~/.claude/settings.json`** | **❌ CI-enforced** (`test/zero-write.test.ts`) | n/a (Anthropic's own) | **✅ every server start** ([SETUP.md](https://github.com/hoangsonww/Claude-Code-Agent-Monitor/blob/master/SETUP.md)) | ❌ | **✅ `--setup` writes statusline hook** |
+| **Outbound HTTP** | **0** | Claude API only | localhost-only, default bind `0.0.0.0` | Self-hosted: 0; cloud variant ships data off-box | None claimed (not CI-verified) |
+| **Read-only invariant** | **Byte-level CI proof** | n/a | ❌ | Read-only on `~/.claude/`; writes own SQLite user DB | Stated posture, no CI gate |
+
+Both [ccusage](https://github.com/ryoppippi/ccusage) (14.2k★ cost analyzer) and [claude-code-trace](https://github.com/delexw/claude-code-trace) (Rust JSONL viewer, Docker mounts `~/.claude` read-only) share beto's posture and operate in adjacent design space — beto adopts them rather than rebuilds (`ccusage` becomes a v1.1 token-source plugin). [opcode](https://github.com/winfunc/opcode) (21.9k★, last commit 2025-10-16, [#468](https://github.com/winfunc/opcode/issues/468) "still maintained?") is no longer maintained and isn't optimized against.
 
 ## Install
 

@@ -1,0 +1,21 @@
+name: zero-write
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Dedicated workflow that runs ONLY the zero-write invariant test
+# (`test/zero-write.test.ts`). A separate workflow file gives README a
+# legible badge — `zero-write CI passing` is the proof Chase points to in
+# Show HN and the manifest-spec credibility argument. Don't merge into
+# ci.yml; the badge readability is the point.
+jobs:
+  zero-write:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bunx vitest run test/zero-write.test.ts

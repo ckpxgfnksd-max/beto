@@ -2,13 +2,35 @@
 //
 // Each session = one JSONL file. The latest record in each file is the
 // snapshot of "what is this session doing now." Covers Aider, Open
-// Interpreter, and similar tools that journal conversation events to
-// disk one line at a time.
+// Interpreter, Codex (rollout files), and similar tools that journal
+// conversation events to disk one line at a time.
 //
 // Reading strategy: glob the file pattern, take the last N lines of
 // each (default 100), parse JSON line-by-line from the end, emit the
 // most recent fully-valid record per file. Cheap because we never
 // re-read the whole file — only the tail.
+//
+// Codex extras (opt-in via manifest):
+//   - headFieldMap: pull static metadata (cwd, originator, sessionId)
+//     from the FIRST line of each file (a `session_meta` record in
+//     Codex's case). Fills slots the tail record didn't supply.
+//   - exclude: drop the file entirely if the head record matches a
+//     simple `field == equals` predicate. Codex Desktop writes guardian
+//     subagent rollouts with `payload.thread_source: "subagent"` — we
+//     don't want every internal policy-check showing up in the inbox.
+//   - Field-map values support dotted paths (`payload.cwd`) for nested
+//     JSON. Flat keys still resolve normally.
+//
+// State inference (when no `state` field is mapped): age of
+// `lastTransitionAt` (or file mtime if unmapped):
+//   < 30s     working
+//   < 5 min   idle
+//   ≥ 5 min   completed
+// Without this, historical rollouts going back weeks would all show as
+// `working`. Mirrors the same heuristic in jsonl-index.
+
+const FRESH_WORKING_MS = 30 * 1000
+const FRESH_IDLE_MS = 5 * 60 * 1000
 
 import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
@@ -27,11 +49,19 @@ export interface JsonlTailOpts {
   now?: () => number
 }
 
+// Matches the trailing UUID in Codex rollout filenames:
+//   rollout-2026-05-17T10-33-23-019e3511-8ea7-7cb3-9ae1-a4426936d3ed.jsonl
+//                              └──────────────── captured ────────────────┘
+const UUID_SUFFIX_RE =
+  /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.[^.]+$/i
+
 export class JsonlTailAdapter implements Adapter {
   readonly id: HarnessId
   readonly displayName: string
   private readonly fileGlob: string
   private readonly fieldMap: FieldMap
+  private readonly headFieldMap?: FieldMap
+  private readonly exclude?: { field: string; equals: string }
   private readonly tailLines: number
   private readonly pollMs: number
   private readonly readBudgetMs: number
@@ -45,6 +75,8 @@ export class JsonlTailAdapter implements Adapter {
     this.displayName = opts.displayName
     this.fileGlob = expandTilde(opts.config.fileGlob)
     this.fieldMap = opts.config.fieldMap
+    this.headFieldMap = opts.config.headFieldMap
+    this.exclude = opts.config.exclude
     this.tailLines = opts.config.tailLines ?? 100
     this.pollMs = opts.pollMs ?? 2000
     this.readBudgetMs = opts.readBudgetMs ?? 1500
@@ -98,9 +130,23 @@ export class JsonlTailAdapter implements Adapter {
     } catch {
       return null
     }
-    // Read up to last ~16KB; that's plenty for the trailing N records
-    // of a typical JSONL stream. Reading from the end requires opening
-    // and seeking — fs.open + read.
+
+    // Head record: first JSON line of the file. Cheap one-time read
+    // capped at ~64KB to handle Codex's verbose session_meta payloads.
+    let head: Record<string, unknown> | null = null
+    if (this.headFieldMap || this.exclude) {
+      head = await readHeadRecord(filePath, size)
+      // Exclude check runs against head — that's where Codex puts the
+      // thread_source / source.subagent.* discriminators.
+      if (head && this.exclude) {
+        const v = readDotted(head, this.exclude.field)
+        if (toStringOrEmpty(v) === this.exclude.equals) return null
+      }
+    }
+
+    // Tail: read up to last ~16KB; that's plenty for the trailing N
+    // records of a typical JSONL stream. Reading from the end requires
+    // opening and seeking — fs.open + read.
     const lines = await tailLines(filePath, size, 16 * 1024, this.tailLines)
     // Walk from the end; the first parseable line is the current state.
     for (let i = lines.length - 1; i >= 0; i--) {
@@ -112,44 +158,110 @@ export class JsonlTailAdapter implements Adapter {
       } catch {
         continue
       }
-      const snap = this.parse(obj, filePath, mtimeMs)
+      const snap = this.parse(obj, head, filePath, mtimeMs)
       if (snap) return snap
     }
     return null
   }
 
   private parse(
-    json: unknown,
+    tailJson: unknown,
+    head: Record<string, unknown> | null,
     filePath: string,
     mtimeMs: number,
   ): SessionSnapshot | null {
-    if (!json || typeof json !== 'object') return null
-    const obj = json as Record<string, unknown>
+    if (!tailJson || typeof tailJson !== 'object') return null
+    const tail = tailJson as Record<string, unknown>
     const fm = this.fieldMap
-    let sessionId = pickField(obj, fm.sessionId)
-    // Fall back to the file basename so a tool that doesn't include a
-    // session id in each record still gets one row per file.
+    const hfm = this.headFieldMap
+    // Resolve each slot: prefer tail value; fall back to head value.
+    const pickWithFallback = (slot: keyof FieldMap): string => {
+      const tailKey = fm[slot]
+      const headKey = hfm?.[slot]
+      const fromTail = tailKey ? readDottedString(tail, tailKey) : ''
+      if (fromTail) return fromTail
+      if (head && headKey) return readDottedString(head, headKey)
+      return ''
+    }
+    const pickNumWithFallback = (slot: keyof FieldMap): number => {
+      const tailKey = fm[slot]
+      const headKey = hfm?.[slot]
+      let v = tailKey ? readDottedTimestamp(tail, tailKey) : 0
+      if (v > 0) return v
+      if (head && headKey) v = readDottedTimestamp(head, headKey)
+      return v
+    }
+
+    let sessionId = pickWithFallback('sessionId')
+    if (!sessionId) sessionId = extractUuidFromFilename(filePath)
     if (!sessionId) sessionId = path.basename(filePath, path.extname(filePath))
     if (!sessionId) return null
-    const rawState = fm.state ? pickField(obj, fm.state) : ''
-    const state = rawState ? normalizeState(rawState) : 'working'
-    const lastTransitionAt = fm.lastTransitionAt
-      ? pickFieldNumber(obj, fm.lastTransitionAt) || mtimeMs
-      : mtimeMs
+
+    const rawState = pickWithFallback('state')
+    const lastTransitionAt = pickNumWithFallback('lastTransitionAt') || mtimeMs
     const fallbackName = sessionId.length > 8 ? sessionId.slice(0, 8) : sessionId
+
+    // State: explicit field if mapped + present; otherwise age-based.
+    let state: SessionSnapshot['state']
+    if (rawState) {
+      state = normalizeState(rawState)
+    } else if (lastTransitionAt > 0) {
+      const age = this.now() - lastTransitionAt
+      if (age < FRESH_WORKING_MS) state = 'working'
+      else if (age < FRESH_IDLE_MS) state = 'idle'
+      else state = 'completed'
+    } else {
+      state = 'working'
+    }
+
     return {
       harness: this.id,
       sessionId,
-      name: fm.name ? pickField(obj, fm.name) || fallbackName : fallbackName,
+      name: pickWithFallback('name') || fallbackName,
       state,
-      summary: fm.summary ? pickField(obj, fm.summary) : '',
+      summary: pickWithFallback('summary'),
       lastTransitionAt,
-      processAlive: true,
-      prUrl: fm.prUrl ? pickField(obj, fm.prUrl) : '',
-      prCheckStatus: fm.prCheckStatus ? pickField(obj, fm.prCheckStatus) : '',
-      cwd: fm.cwd ? pickField(obj, fm.cwd) : '',
+      processAlive: state === 'working' || state === 'idle',
+      prUrl: pickWithFallback('prUrl'),
+      prCheckStatus: pickWithFallback('prCheckStatus'),
+      cwd: pickWithFallback('cwd'),
       rawStateString: rawState,
     }
+  }
+}
+
+// Read the first complete JSON record from the head of a file. Reads up
+// to `maxBytes` from offset 0, finds the first newline-terminated line
+// that parses as JSON. Returns null on any failure.
+async function readHeadRecord(
+  filePath: string,
+  size: number,
+): Promise<Record<string, unknown> | null> {
+  if (size === 0) return null
+  const maxBytes = 64 * 1024
+  const fh = await fs.open(filePath, 'r')
+  try {
+    const bytesToRead = Math.min(size, maxBytes)
+    const buf = Buffer.alloc(bytesToRead)
+    await fh.read(buf, 0, bytesToRead, 0)
+    const text = buf.toString('utf-8')
+    // First newline-terminated line. If the head record is longer than
+    // maxBytes (extremely large session_meta), we'll see no newline and
+    // give up — that's an acceptable trade for bounded I/O.
+    const nl = text.indexOf('\n')
+    const firstLine = (nl >= 0 ? text.slice(0, nl) : text).trim()
+    if (!firstLine) return null
+    try {
+      const obj = JSON.parse(firstLine)
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        return obj as Record<string, unknown>
+      }
+    } catch {
+      // not JSON
+    }
+    return null
+  } finally {
+    await fh.close()
   }
 }
 
@@ -273,18 +385,43 @@ function globSegmentToRegex(seg: string): RegExp {
   return new RegExp('^' + escaped + '$')
 }
 
-function pickField(obj: Record<string, unknown>, key: string): string {
-  const v = obj[key]
+// Walk a dotted path through nested objects. `payload.cwd` → obj.payload.cwd.
+// Flat keys still resolve normally because split('.') with no dot yields [key].
+function readDotted(obj: Record<string, unknown>, dottedKey: string): unknown {
+  if (!dottedKey) return undefined
+  const parts = dottedKey.split('.')
+  let cur: unknown = obj
+  for (const p of parts) {
+    if (cur == null || typeof cur !== 'object') return undefined
+    cur = (cur as Record<string, unknown>)[p]
+  }
+  return cur
+}
+
+function readDottedString(obj: Record<string, unknown>, dottedKey: string): string {
+  return toStringOrEmpty(readDotted(obj, dottedKey))
+}
+
+function toStringOrEmpty(v: unknown): string {
   return typeof v === 'string' ? v : v == null ? '' : String(v)
 }
-function pickFieldNumber(obj: Record<string, unknown>, key: string): number {
-  const v = obj[key]
+
+// Timestamps may be ISO 8601 strings (Codex's `timestamp`) or numeric
+// ms-since-epoch. Normalize either form to ms.
+function readDottedTimestamp(obj: Record<string, unknown>, dottedKey: string): number {
+  const v = readDotted(obj, dottedKey)
   if (typeof v === 'number' && Number.isFinite(v)) return v
   if (typeof v === 'string') {
-    const n = Number(v)
-    if (Number.isFinite(n)) return n
+    const parsed = Date.parse(v)
+    if (Number.isFinite(parsed)) return parsed
   }
   return 0
+}
+
+function extractUuidFromFilename(filePath: string): string {
+  const base = path.basename(filePath)
+  const m = UUID_SUFFIX_RE.exec(base)
+  return m ? m[1]!.toLowerCase() : ''
 }
 
 function shallowEqual(a: SessionSnapshot[], b: SessionSnapshot[]): boolean {

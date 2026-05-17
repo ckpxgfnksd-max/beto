@@ -54,9 +54,22 @@ export interface SqliteSessionsTableConfig {
 
 // Kind: jsonl-tail. Each session is one JSONL file; the latest record is
 // the source of truth for the session's current state.
+//
+// Optional extras (used by Codex):
+//   - `headFieldMap`: read static metadata (cwd, originator, sessionId)
+//     from the FIRST record of each file. Useful when the first line is
+//     a session_meta record and subsequent lines are events. Head fields
+//     fill any slot the tail field map left empty.
+//   - `exclude`: drop files whose head record matches `field == equals`.
+//     Codex Desktop spawns subagent rollouts (guardian etc.) we don't
+//     want to surface as standalone agents.
+//   - Field-map values support dotted paths (`payload.cwd`) for nested
+//     JSON. Flat keys still work.
 export interface JsonlTailConfig {
   fileGlob: string
   fieldMap: FieldMap
+  headFieldMap?: FieldMap
+  exclude?: { field: string; equals: string }
   tailLines?: number
 }
 
@@ -296,7 +309,18 @@ function validateAdapterConfig(
       }
       if (!fileGlob || !fieldMap) return null
       const tailLines = pickNumber(cfg, 'tailLines')
-      return { kind, config: { fileGlob, fieldMap, ...(tailLines ? { tailLines } : {}) } }
+      const headFieldMap = pickFieldMap(cfg, 'headFieldMap', errors)
+      const exclude = pickExclude(cfg, 'exclude', errors)
+      return {
+        kind,
+        config: {
+          fileGlob,
+          fieldMap,
+          ...(headFieldMap ? { headFieldMap } : {}),
+          ...(exclude ? { exclude } : {}),
+          ...(tailLines ? { tailLines } : {}),
+        },
+      }
     }
     case 'jsonl-index': {
       const filePath = pickString(cfg, 'filePath')
@@ -327,6 +351,28 @@ function validateAdapterConfig(
       }
     }
   }
+}
+
+function pickExclude(
+  o: Record<string, unknown>,
+  key: string,
+  errors: ValidationError[],
+): { field: string; equals: string } | undefined {
+  const v = o[key]
+  if (v == null) return undefined
+  if (typeof v !== 'object') {
+    errors.push({ path: `adapter.config.${key}`, message: 'must be an object' })
+    return undefined
+  }
+  const vo = v as Record<string, unknown>
+  const field = pickString(vo, 'field')
+  const equals = pickString(vo, 'equals')
+  if (!field) errors.push({ path: `adapter.config.${key}.field`, message: 'required string' })
+  if (equals == null) {
+    errors.push({ path: `adapter.config.${key}.equals`, message: 'required string' })
+  }
+  if (!field || equals == null) return undefined
+  return { field, equals }
 }
 
 function pickFieldMap(

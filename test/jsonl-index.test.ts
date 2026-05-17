@@ -151,13 +151,16 @@ describe('JsonlIndexAdapter (Codex shape)', () => {
 })
 
 describe('codex.json (verified manifest)', () => {
+  // Codex v0.8.1+ ships a `jsonl-tail` adapter over per-session rollout
+  // files — the `jsonl-index` (session_index.jsonl) source proved too
+  // laggy to detect live agents. See plan: beto-bug-detect-agent-codex-…
   it('loads via the plugin loader and produces a working adapter', async () => {
     const home = await fs.mkdtemp(path.join(os.tmpdir(), 'beto-home-'))
     const repoManifests = path.resolve(__dirname, '..', 'manifests')
     const result = await loadPlugins({ home, extraDirs: [repoManifests] })
     const codex = result.loaded.find((p) => p.manifest.id === 'codex')
     expect(codex).toBeDefined()
-    expect(codex!.manifest.adapter.kind).toBe('jsonl-index')
+    expect(codex!.manifest.adapter.kind).toBe('jsonl-tail')
     expect(result.failures).toEqual([])
   })
 
