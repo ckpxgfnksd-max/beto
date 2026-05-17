@@ -224,6 +224,7 @@ const { waitUntilExit } = render(<App registry={registry} notifier={notifier} />
 
 await waitUntilExit()
 registry.stop()
+await notifier.flush()
 
 function usage(): string {
   return `beto — universal terminal sidebar for AI agent sessions

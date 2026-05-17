@@ -18,8 +18,46 @@
         "lastTransitionAt": "time_updated",
         "cwd": "directory"
       },
-      "where": "time_archived IS NULL",
-      "limit": 100
+      "where": "time_archived IS NULL AND time_compacting IS NULL",
+      "limit": 100,
+      "joinLatest": {
+        "as": "latestMessage",
+        "sql": "SELECT m.session_id, json_extract(m.data,'$.role') AS role, json_extract(m.data,'$.time.completed') AS completed_at, json_extract(m.data,'$.error.name') AS error_name FROM message m WHERE m.session_id IN (:sessionIds) ORDER BY m.time_created DESC"
+      },
+      "stateInference": [
+        {
+          "name": "assistant errored",
+          "mapsTo": "failed",
+          "when": {
+            "equals": { "latestMessage.role": "assistant" },
+            "present": ["latestMessage.error_name"]
+          }
+        },
+        {
+          "name": "assistant completed → user's turn",
+          "mapsTo": "needs-input",
+          "when": {
+            "equals": { "latestMessage.role": "assistant" },
+            "present": ["latestMessage.completed_at"],
+            "absent": ["latestMessage.error_name"]
+          }
+        },
+        {
+          "name": "assistant streaming",
+          "mapsTo": "working",
+          "when": {
+            "equals": { "latestMessage.role": "assistant" },
+            "absent": ["latestMessage.completed_at"]
+          }
+        },
+        {
+          "name": "user prompted",
+          "mapsTo": "working",
+          "when": {
+            "equals": { "latestMessage.role": "user" }
+          }
+        }
+      ]
     }
   }
 }

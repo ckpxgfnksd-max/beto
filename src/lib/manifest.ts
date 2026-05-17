@@ -9,7 +9,38 @@
 // state; the `config` block is kind-specific. Future kinds plug in as
 // additional union members here.
 
-import type { HarnessId } from './types.js'
+import type { HarnessId, SessionState } from './types.js'
+
+// ─── State inference rules ───────────────────────────────────────────
+//
+// Declarative way to map raw event/row data to a SessionState when the
+// adapter can't read an explicit `state` field. Each rule's `when` is a
+// conjunction (all predicates AND together). The first rule that
+// matches wins; if no rule matches, the adapter falls through to its
+// default heuristic (age-based for jsonl-tail, 'unknown' for sqlite).
+//
+// Predicate vocabulary:
+//   - equals: dotted-path → required string value (after String()
+//             coercion). Multiple entries AND together.
+//   - present: dotted-path is present AND not empty/null/0.
+//   - absent: dotted-path is missing OR empty/null.
+//   - minAgeMs: age (now - lastTransitionAt) is at least this many ms.
+//
+// Scope (`against`, jsonl-tail only): which JSON record to evaluate
+// predicates against. 'tail' (default) = the most-recent record;
+// 'head' = the first-line session_meta record. Sqlite adapters expose
+// scopes via `joinLatest.as` virtual names instead.
+export interface StateInferenceRule {
+  name?: string
+  mapsTo: SessionState
+  when: {
+    equals?: Record<string, string>
+    present?: string[]
+    absent?: string[]
+    minAgeMs?: number
+    against?: 'tail' | 'head'
+  }
+}
 
 // ─── Adapter kinds ───────────────────────────────────────────────────
 
@@ -44,12 +75,39 @@ export interface DirectoryOfStateJsonConfig {
 
 // Kind: sqlite-sessions-table. A SQLite database with a sessions table.
 // Shells out to the `sqlite3` CLI for portability (no native binding).
+//
+// Optional extras for state inference:
+//   - joinLatest: a per-session sub-query whose result columns are
+//     exposed under a virtual scope name (e.g. 'latestMessage'). The
+//     adapter batches the sub-query into a single SQL round-trip using
+//     `WHERE <sessionIdCol> IN (...)`, so one extra subprocess covers
+//     all selected sessions. Used by OpenCode to peek at the latest
+//     row of `session_message` for blocked-state detection.
+//   - stateInference: rules that map joined data to a SessionState.
+//     First matching rule wins; runs after `where` filtering, before
+//     the existing `unknown` fallback.
+export interface SqliteJoinLatest {
+  // Virtual scope name surfaced in stateInference paths (no dots).
+  as: string
+  // Single SELECT statement returning at most one row per session.
+  // MUST contain the literal token `:sessionIds` exactly once — the
+  // adapter substitutes it with a comma-separated quoted list of
+  // session IDs at scan time. The SELECT must also include a column
+  // named `session_id` (or the join key configured via `keyAs`).
+  sql: string
+  // Column in the sub-query result that matches the parent session id.
+  // Defaults to `session_id`.
+  keyAs?: string
+}
+
 export interface SqliteSessionsTableConfig {
   dbPath: string
   table: string
   fieldMap: FieldMap
   where?: string
   limit?: number
+  joinLatest?: SqliteJoinLatest
+  stateInference?: StateInferenceRule[]
 }
 
 // Kind: jsonl-tail. Each session is one JSONL file; the latest record is
@@ -71,6 +129,12 @@ export interface JsonlTailConfig {
   headFieldMap?: FieldMap
   exclude?: { field: string; equals: string }
   tailLines?: number
+  // Optional declarative state inference. Rules are evaluated AFTER
+  // `exclude` and field mapping, BEFORE the age-based fallback. Useful
+  // for harnesses (Codex) whose tail records carry no explicit state
+  // but have terminator events like `event_msg / task_complete` that
+  // deterministically mean "waiting on the user."
+  stateInference?: StateInferenceRule[]
 }
 
 // Kind: jsonl-index. A single JSONL file where each line is a separate
@@ -289,6 +353,8 @@ function validateAdapterConfig(
       if (!dbPath || !table || !fieldMap) return null
       const where = pickString(cfg, 'where')
       const limit = pickNumber(cfg, 'limit')
+      const joinLatest = pickJoinLatest(cfg, 'joinLatest', errors)
+      const stateInference = pickStateInference(cfg, 'stateInference', errors)
       return {
         kind,
         config: {
@@ -297,6 +363,8 @@ function validateAdapterConfig(
           fieldMap,
           ...(where ? { where } : {}),
           ...(limit ? { limit } : {}),
+          ...(joinLatest ? { joinLatest } : {}),
+          ...(stateInference ? { stateInference } : {}),
         },
       }
     }
@@ -311,6 +379,7 @@ function validateAdapterConfig(
       const tailLines = pickNumber(cfg, 'tailLines')
       const headFieldMap = pickFieldMap(cfg, 'headFieldMap', errors)
       const exclude = pickExclude(cfg, 'exclude', errors)
+      const stateInference = pickStateInference(cfg, 'stateInference', errors)
       return {
         kind,
         config: {
@@ -319,6 +388,7 @@ function validateAdapterConfig(
           ...(headFieldMap ? { headFieldMap } : {}),
           ...(exclude ? { exclude } : {}),
           ...(tailLines ? { tailLines } : {}),
+          ...(stateInference ? { stateInference } : {}),
         },
       }
     }
@@ -402,6 +472,165 @@ function pickFieldMap(
     prCheckStatus: pickString(fmo, 'prCheckStatus') ?? undefined,
     cwd: pickString(fmo, 'cwd') ?? undefined,
   }
+}
+
+const VALID_STATES: readonly SessionState[] = [
+  'working',
+  'needs-input',
+  'idle',
+  'completed',
+  'failed',
+  'stopped',
+  'unknown',
+]
+
+function pickStateInference(
+  o: Record<string, unknown>,
+  key: string,
+  errors: ValidationError[],
+): StateInferenceRule[] | undefined {
+  const v = o[key]
+  if (v == null) return undefined
+  if (!Array.isArray(v)) {
+    errors.push({ path: `adapter.config.${key}`, message: 'must be an array of rules' })
+    return undefined
+  }
+  const rules: StateInferenceRule[] = []
+  v.forEach((entry, idx) => {
+    const base = `adapter.config.${key}[${idx}]`
+    if (!entry || typeof entry !== 'object') {
+      errors.push({ path: base, message: 'rule must be an object' })
+      return
+    }
+    const eo = entry as Record<string, unknown>
+    const mapsTo = pickString(eo, 'mapsTo')
+    if (!mapsTo || !(VALID_STATES as readonly string[]).includes(mapsTo)) {
+      errors.push({
+        path: `${base}.mapsTo`,
+        message: `must be one of: ${VALID_STATES.join(', ')}`,
+      })
+      return
+    }
+    const name = pickString(eo, 'name') ?? undefined
+    const whenRaw = eo.when
+    if (!whenRaw || typeof whenRaw !== 'object') {
+      errors.push({ path: `${base}.when`, message: 'required object' })
+      return
+    }
+    const w = whenRaw as Record<string, unknown>
+    const when: StateInferenceRule['when'] = {}
+    // equals: dotted-path → string value map
+    if (w.equals != null) {
+      if (typeof w.equals !== 'object' || Array.isArray(w.equals)) {
+        errors.push({ path: `${base}.when.equals`, message: 'must be an object' })
+      } else {
+        const equalsMap: Record<string, string> = {}
+        for (const [k, val] of Object.entries(w.equals as Record<string, unknown>)) {
+          if (typeof val !== 'string') {
+            errors.push({
+              path: `${base}.when.equals.${k}`,
+              message: 'value must be a string',
+            })
+            continue
+          }
+          equalsMap[k] = val
+        }
+        if (Object.keys(equalsMap).length > 0) when.equals = equalsMap
+      }
+    }
+    if (w.present != null) {
+      const arr = pickStringArrayLoose(w.present)
+      if (!arr) {
+        errors.push({ path: `${base}.when.present`, message: 'must be string[]' })
+      } else {
+        when.present = arr
+      }
+    }
+    if (w.absent != null) {
+      const arr = pickStringArrayLoose(w.absent)
+      if (!arr) {
+        errors.push({ path: `${base}.when.absent`, message: 'must be string[]' })
+      } else {
+        when.absent = arr
+      }
+    }
+    if (w.minAgeMs != null) {
+      if (typeof w.minAgeMs !== 'number' || !Number.isFinite(w.minAgeMs) || w.minAgeMs < 0) {
+        errors.push({ path: `${base}.when.minAgeMs`, message: 'must be a non-negative number' })
+      } else {
+        when.minAgeMs = w.minAgeMs
+      }
+    }
+    if (w.against != null) {
+      if (w.against !== 'tail' && w.against !== 'head') {
+        errors.push({ path: `${base}.when.against`, message: "must be 'tail' or 'head'" })
+      } else {
+        when.against = w.against
+      }
+    }
+    rules.push({ ...(name ? { name } : {}), mapsTo: mapsTo as SessionState, when })
+  })
+  return rules.length > 0 ? rules : undefined
+}
+
+function pickJoinLatest(
+  o: Record<string, unknown>,
+  key: string,
+  errors: ValidationError[],
+): SqliteJoinLatest | undefined {
+  const v = o[key]
+  if (v == null) return undefined
+  if (typeof v !== 'object' || Array.isArray(v)) {
+    errors.push({ path: `adapter.config.${key}`, message: 'must be an object' })
+    return undefined
+  }
+  const vo = v as Record<string, unknown>
+  const as = pickString(vo, 'as')
+  const sql = pickString(vo, 'sql')
+  const keyAs = pickString(vo, 'keyAs')
+  if (!as || !/^[a-z][a-zA-Z0-9]*$/.test(as)) {
+    errors.push({
+      path: `adapter.config.${key}.as`,
+      message: 'required identifier (lowerCamelCase)',
+    })
+  }
+  if (!sql) {
+    errors.push({ path: `adapter.config.${key}.sql`, message: 'required SELECT statement' })
+  }
+  if (sql) {
+    // Defensive: manifests live in user-writable ~/.beto/plugins/. A
+    // benign typo or copy-paste of a malicious snippet shouldn't be
+    // able to issue arbitrary writes. Enforce single SELECT.
+    const trimmed = sql.trim()
+    if (!/^select\s/i.test(trimmed)) {
+      errors.push({
+        path: `adapter.config.${key}.sql`,
+        message: 'must start with SELECT',
+      })
+    }
+    // Allow a single trailing semicolon; reject any other.
+    const withoutTrailing = trimmed.replace(/;\s*$/, '')
+    if (withoutTrailing.includes(';')) {
+      errors.push({
+        path: `adapter.config.${key}.sql`,
+        message: 'must be a single statement (no embedded semicolons)',
+      })
+    }
+    if (!sql.includes(':sessionIds')) {
+      errors.push({
+        path: `adapter.config.${key}.sql`,
+        message: 'must contain the :sessionIds placeholder',
+      })
+    }
+  }
+  if (!as || !sql) return undefined
+  return { as, sql, ...(keyAs ? { keyAs } : {}) }
+}
+
+function pickStringArrayLoose(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null
+  if (!v.every((x) => typeof x === 'string')) return null
+  return v as string[]
 }
 
 function pickString(o: Record<string, unknown>, key: string): string | null {

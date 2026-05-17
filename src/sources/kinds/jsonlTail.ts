@@ -37,7 +37,14 @@ import * as path from 'node:path'
 import type { Adapter } from '../adapter.js'
 import type { HarnessId, SessionSnapshot } from '../../lib/types.js'
 import { normalizeState } from '../state.js'
-import type { FieldMap, JsonlTailConfig } from '../../lib/manifest.ts'
+import type { FieldMap, JsonlTailConfig, StateInferenceRule } from '../../lib/manifest.ts'
+import {
+  readDotted,
+  readDottedString,
+  readDottedTimestamp,
+  toStringOrEmpty,
+} from '../dotted.js'
+import { applyStateInference } from '../stateInference.js'
 import { expandTilde } from './directoryOfStateJson.js'
 
 export interface JsonlTailOpts {
@@ -63,6 +70,7 @@ export class JsonlTailAdapter implements Adapter {
   private readonly headFieldMap?: FieldMap
   private readonly exclude?: { field: string; equals: string }
   private readonly tailLines: number
+  private readonly stateInference?: readonly StateInferenceRule[]
   private readonly pollMs: number
   private readonly readBudgetMs: number
   private readonly now: () => number
@@ -78,6 +86,7 @@ export class JsonlTailAdapter implements Adapter {
     this.headFieldMap = opts.config.headFieldMap
     this.exclude = opts.config.exclude
     this.tailLines = opts.config.tailLines ?? 100
+    this.stateInference = opts.config.stateInference
     this.pollMs = opts.pollMs ?? 2000
     this.readBudgetMs = opts.readBudgetMs ?? 1500
     this.now = opts.now ?? (() => Date.now())
@@ -201,17 +210,31 @@ export class JsonlTailAdapter implements Adapter {
     const lastTransitionAt = pickNumWithFallback('lastTransitionAt') || mtimeMs
     const fallbackName = sessionId.length > 8 ? sessionId.slice(0, 8) : sessionId
 
-    // State: explicit field if mapped + present; otherwise age-based.
+    // State precedence:
+    //   1. Explicit mapped `state` field (Claude path; never reached
+    //      for Codex since its manifest doesn't map state).
+    //   2. Declarative stateInference rules from the manifest
+    //      (Codex: task_complete → needs-input, etc).
+    //   3. Age-based fallback (rolling window on lastTransitionAt).
     let state: SessionSnapshot['state']
     if (rawState) {
       state = normalizeState(rawState)
-    } else if (lastTransitionAt > 0) {
-      const age = this.now() - lastTransitionAt
-      if (age < FRESH_WORKING_MS) state = 'working'
-      else if (age < FRESH_IDLE_MS) state = 'idle'
-      else state = 'completed'
     } else {
-      state = 'working'
+      const inferred = applyStateInference(
+        this.stateInference,
+        { tail, head },
+        { now: this.now(), lastTransitionAt, defaultScope: 'tail' },
+      )
+      if (inferred) {
+        state = inferred
+      } else if (lastTransitionAt > 0) {
+        const age = this.now() - lastTransitionAt
+        if (age < FRESH_WORKING_MS) state = 'working'
+        else if (age < FRESH_IDLE_MS) state = 'idle'
+        else state = 'completed'
+      } else {
+        state = 'working'
+      }
     }
 
     return {
@@ -383,39 +406,6 @@ function globSegmentToRegex(seg: string): RegExp {
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
     .replace(/\*/g, '.*')
   return new RegExp('^' + escaped + '$')
-}
-
-// Walk a dotted path through nested objects. `payload.cwd` → obj.payload.cwd.
-// Flat keys still resolve normally because split('.') with no dot yields [key].
-function readDotted(obj: Record<string, unknown>, dottedKey: string): unknown {
-  if (!dottedKey) return undefined
-  const parts = dottedKey.split('.')
-  let cur: unknown = obj
-  for (const p of parts) {
-    if (cur == null || typeof cur !== 'object') return undefined
-    cur = (cur as Record<string, unknown>)[p]
-  }
-  return cur
-}
-
-function readDottedString(obj: Record<string, unknown>, dottedKey: string): string {
-  return toStringOrEmpty(readDotted(obj, dottedKey))
-}
-
-function toStringOrEmpty(v: unknown): string {
-  return typeof v === 'string' ? v : v == null ? '' : String(v)
-}
-
-// Timestamps may be ISO 8601 strings (Codex's `timestamp`) or numeric
-// ms-since-epoch. Normalize either form to ms.
-function readDottedTimestamp(obj: Record<string, unknown>, dottedKey: string): number {
-  const v = readDotted(obj, dottedKey)
-  if (typeof v === 'number' && Number.isFinite(v)) return v
-  if (typeof v === 'string') {
-    const parsed = Date.parse(v)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return 0
 }
 
 function extractUuidFromFilename(filePath: string): string {

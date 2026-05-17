@@ -175,6 +175,116 @@ Example consumers: Aider (no central per-session state).
 }
 ```
 
+### State inference (draft 0.2)
+
+When a harness doesn't expose an explicit `state` field but its session
+data carries deterministic terminator events, an adapter can map them
+to canonical states via declarative rules. The `stateInference` array
+lives inside `adapter.config` for `jsonl-tail` and `sqlite-sessions-table`.
+
+```json
+{
+  "kind": "jsonl-tail",
+  "config": {
+    "fileGlob": "~/.codex/sessions/**/rollout-*.jsonl",
+    "fieldMap": { "sessionId": "payload.id", "lastTransitionAt": "timestamp" },
+    "stateInference": [
+      {
+        "name": "task complete → user's turn",
+        "mapsTo": "needs-input",
+        "when": {
+          "equals": { "type": "event_msg", "payload.type": "task_complete" }
+        }
+      },
+      {
+        "mapsTo": "stopped",
+        "when": { "equals": { "payload.type": "turn_aborted" } }
+      },
+      {
+        "mapsTo": "idle",
+        "when": { "minAgeMs": 300000 }
+      }
+    ]
+  }
+}
+```
+
+**Precedence inside the adapter:**
+
+1. `fieldMap.state` mapped + present → `normalizeState(raw)` wins (Claude path).
+2. `stateInference` rules — first matching rule's `mapsTo` wins.
+3. Adapter default (age-based for `jsonl-tail`; `'unknown'` for `sqlite-sessions-table`).
+
+**Rule shape:**
+
+| Key | Type | Notes |
+|-----|------|-------|
+| `name` | string | Optional, for debug logs |
+| `mapsTo` | SessionState | Required. Closed set (see "State normalization"). |
+| `when` | object | Required predicates (AND-combined). |
+| `when.equals` | record<dottedPath, string> | All keys must match. Values are `String()`-coerced. |
+| `when.present` | dottedPath[] | Each must resolve to a non-empty value (non-null, non-empty-string, non-zero). |
+| `when.absent` | dottedPath[] | Each must resolve to missing / empty. |
+| `when.minAgeMs` | number | `(now − lastTransitionAt) ≥ minAgeMs`. Missing `lastTransitionAt` is treated as ∞. |
+| `when.against` | `'tail' \| 'head'` | `jsonl-tail` only. Default `'tail'`. |
+
+**Scopes.** Dotted paths may be scope-prefixed:
+
+- `jsonl-tail`: scopes are `tail` (default) and `head` (when `headFieldMap` is set).
+- `sqlite-sessions-table`: scopes are `session` (default) and whatever the `joinLatest.as` virtual name is (see below).
+
+A path with a known scope prefix resolves into that scope's record. A
+path with no scope prefix resolves into the rule's `against` scope (for
+jsonl-tail) or the default scope.
+
+### Joined sub-queries for SQLite (draft 0.2)
+
+Some harnesses (OpenCode) have no status column on the session row —
+the durable "is the agent waiting on the user" signal lives in a child
+table (the latest `message` per session). `joinLatest` declares a SQL
+sub-query batched into a single round-trip via the `:sessionIds`
+placeholder.
+
+```json
+{
+  "kind": "sqlite-sessions-table",
+  "config": {
+    "dbPath": "~/.local/share/opencode/opencode.db",
+    "table": "session",
+    "fieldMap": { "sessionId": "id", "name": "title", "lastTransitionAt": "time_updated" },
+    "where": "time_archived IS NULL AND time_compacting IS NULL",
+    "joinLatest": {
+      "as": "latestMessage",
+      "sql": "SELECT m.session_id, json_extract(m.data,'$.role') AS role, json_extract(m.data,'$.time.completed') AS completed_at, json_extract(m.data,'$.error.name') AS error_name FROM message m WHERE m.session_id IN (:sessionIds) ORDER BY m.time_created DESC"
+    },
+    "stateInference": [
+      { "mapsTo": "failed",      "when": { "equals": { "latestMessage.role": "assistant" }, "present": ["latestMessage.error_name"] } },
+      { "mapsTo": "needs-input", "when": { "equals": { "latestMessage.role": "assistant" }, "present": ["latestMessage.completed_at"], "absent": ["latestMessage.error_name"] } },
+      { "mapsTo": "working",     "when": { "equals": { "latestMessage.role": "assistant" }, "absent": ["latestMessage.completed_at"] } },
+      { "mapsTo": "working",     "when": { "equals": { "latestMessage.role": "user" } } }
+    ]
+  }
+}
+```
+
+**Rules for `joinLatest.sql`:**
+
+- Must contain the literal `:sessionIds` exactly once. The consumer
+  substitutes it with a comma-separated, SQL-quoted list of session ids.
+- Must be a single `SELECT` statement. Validators reject embedded `;`
+  (single trailing `;` allowed) and non-`SELECT` openings.
+- Must return one column named `session_id` (or whatever `keyAs` says)
+  so the consumer can index rows back to their parent session.
+- If multiple rows match a session id, **only the first encountered is
+  used** — manifest authors are responsible for the `ORDER BY` that
+  picks the right one.
+
+Defensive note: manifests live in a user-writable directory
+(`~/.beto/plugins/`). The single-statement / `SELECT`-only validation
+guards against accidental copy-paste of multi-statement snippets. It's
+not a security boundary against a fully malicious manifest — the user
+already owns the process.
+
 ### Token sources
 
 Optional `tokens` block lets a manifest declare where token-usage data lives.

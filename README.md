@@ -27,7 +27,7 @@ beto · 8 sessions · 3 need you
   [7] ✗ Orion    H · failed
 ```
 
-The three-tier escalation ramp is **universal across every harness** beto supports. A blocked Codex session counts the same as a blocked Claude session.
+The three-tier escalation ramp is **universal across every harness** beto supports. A blocked Codex session counts the same as a blocked Claude session — backed by declarative [`stateInference` rules in each manifest](docs/manifest-spec.md#state-inference-draft-02), regression-tested per harness.
 
 ## How beto compares
 

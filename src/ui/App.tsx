@@ -82,6 +82,23 @@ export function App({ registry, notifier }: Props) {
     return () => clearInterval(id)
   }, [tick])
 
+  // Cold-start hint: when the notification ledger was empty on launch,
+  // we silently seeded it from observed needs-input sessions instead of
+  // notifying. Surface the count in the status line so the user knows
+  // why their already-blocked sessions didn't ping.
+  useEffect(() => {
+    if (!notifier) return
+    const unsub = notifier.subscribeColdStart((seeded) => {
+      if (seeded > 0) {
+        setFlash({
+          kind: 'ok',
+          text: `Seeded ${seeded} pre-existing blocked session${seeded === 1 ? '' : 's'} (won't re-notify)`,
+        })
+      }
+    })
+    return unsub
+  }, [notifier, setFlash])
+
   // Memoize per-harness counts AND the filtered flat list so renderers
   // don't recompute on unrelated state changes.
   const filteredRows = useMemo(

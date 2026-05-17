@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { NotificationManager, type NotificationPayload } from '../src/lib/notifications.js'
+import { MemoryNotificationLedger } from '../src/lib/notificationLedger.js'
 import type { SessionSnapshot } from '../src/lib/types.js'
 
 function row(over: Partial<SessionSnapshot>): SessionSnapshot {
@@ -33,26 +34,193 @@ function recordingDispatcher(): {
   }
 }
 
-describe('NotificationManager', () => {
-  it('does not fire on the first emission of an already-blocked session', () => {
+describe('NotificationManager — subscribeColdStart', () => {
+  it('subscribers attached BEFORE observe receive the seed count', () => {
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: recordingDispatcher().fn,
+      now: () => 1000,
+      ledger,
+    })
+    const received: number[] = []
+    mgr.subscribeColdStart((n) => received.push(n))
+    mgr.observe([row({ state: 'needs-input' })])
+    expect(received).toEqual([1])
+  })
+
+  it('subscribers attached AFTER cold-start replay immediately', () => {
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: recordingDispatcher().fn,
+      now: () => 1000,
+      ledger,
+    })
+    mgr.observe([
+      row({ sessionId: 'a', state: 'needs-input' }),
+      row({ sessionId: 'b', state: 'needs-input' }),
+    ])
+    const received: number[] = []
+    mgr.subscribeColdStart((n) => received.push(n))
+    expect(received).toEqual([2])
+  })
+
+  it('subscribe returns an unsub that stops further notifications', () => {
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: recordingDispatcher().fn,
+      now: () => 1000,
+      ledger,
+    })
+    const received: number[] = []
+    const unsub = mgr.subscribeColdStart((n) => received.push(n))
+    unsub()
+    mgr.observe([row({ state: 'needs-input' })])
+    expect(received).toEqual([])
+  })
+})
+
+describe('NotificationManager — cold start (no prior ledger)', () => {
+  it('silently seeds the ledger from already-blocked sessions; does NOT fire', () => {
     const rec = recordingDispatcher()
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    let coldStartCalls: number[] = []
     const mgr = new NotificationManager({
       enabled: true,
       dispatcher: rec.fn,
       now: () => 1000,
+      ledger,
+      onColdStart: (n) => coldStartCalls.push(n),
+    })
+    const fired = mgr.observe([row({ state: 'needs-input' })])
+    expect(fired).toHaveLength(0)
+    expect(rec.fired).toHaveLength(0)
+    expect(ledger.hasNotified('claude:s1')).toBe(true)
+    expect(coldStartCalls).toEqual([1])
+  })
+
+  it('onColdStart fires exactly once even with zero blocked sessions', () => {
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    let seededReports: number[] = []
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: recordingDispatcher().fn,
+      now: () => 1000,
+      ledger,
+      onColdStart: (n) => seededReports.push(n),
+    })
+    mgr.observe([row({ state: 'working' })])
+    expect(seededReports).toEqual([0])
+    // Second tick is a normal one — onColdStart is NOT invoked again.
+    mgr.observe([row({ state: 'working' })])
+    expect(seededReports).toEqual([0])
+  })
+
+  it('subsequent transition fires after cold-start was consumed', () => {
+    const rec = recordingDispatcher()
+    const ledger = new MemoryNotificationLedger({ coldStart: true })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: rec.fn,
+      now: () => 1000,
+      ledger,
+    })
+    mgr.observe([row({ state: 'working' })])
+    const fired = mgr.observe([row({ state: 'needs-input' })])
+    expect(fired).toHaveLength(1)
+  })
+})
+
+describe('NotificationManager — warm start (ledger already exists)', () => {
+  it('first emission of a session NOT in ledger fires (startup-discovery)', () => {
+    // The "warm start, but this particular session is brand new" case.
+    // Catches sessions that transitioned to blocked while beto was off.
+    const rec = recordingDispatcher()
+    const ledger = new MemoryNotificationLedger({
+      coldStart: false,
+      prefill: [
+        // Some unrelated session already seen previously.
+        { key: 'claude:other', firstSeenMs: 0, lastFiredMs: 0 },
+      ],
+    })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: rec.fn,
+      now: () => 1000,
+      ledger,
+    })
+    const fired = mgr.observe([row({ sessionId: 'new', state: 'needs-input' })])
+    expect(fired).toHaveLength(1)
+    expect(ledger.hasNotified('claude:new')).toBe(true)
+  })
+
+  it('first emission of a session ALREADY in ledger does NOT fire (already told)', () => {
+    const rec = recordingDispatcher()
+    const ledger = new MemoryNotificationLedger({
+      coldStart: false,
+      prefill: [{ key: 'claude:s1', firstSeenMs: 0, lastFiredMs: 0 }],
+    })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: rec.fn,
+      now: () => 1000,
+      ledger,
     })
     const fired = mgr.observe([row({ state: 'needs-input' })])
     expect(fired).toHaveLength(0)
     expect(rec.fired).toHaveLength(0)
   })
 
-  it('fires on a transition INTO needs-input', () => {
+  it('clears ledger entry when state leaves needs-input, so re-block fires fresh', () => {
     const rec = recordingDispatcher()
+    let now = 100_000
+    const ledger = new MemoryNotificationLedger({
+      coldStart: false,
+      prefill: [{ key: 'claude:s1', firstSeenMs: 0, lastFiredMs: 0 }],
+    })
     const mgr = new NotificationManager({
       enabled: true,
       dispatcher: rec.fn,
-      now: () => 1000,
+      throttleMs: 30_000,
+      now: () => now,
+      ledger,
     })
+    // First: ledger says we already told them — skip.
+    mgr.observe([row({ state: 'needs-input' })])
+    expect(rec.fired).toHaveLength(0)
+    expect(ledger.hasNotified('claude:s1')).toBe(true)
+
+    // Session goes back to working — ledger entry cleared.
+    now += 60_000
+    mgr.observe([row({ state: 'working' })])
+    expect(ledger.hasNotified('claude:s1')).toBe(false)
+
+    // Re-block → fires fresh.
+    now += 60_000
+    const fired = mgr.observe([row({ state: 'needs-input' })])
+    expect(fired).toHaveLength(1)
+  })
+})
+
+describe('NotificationManager — in-process behavior', () => {
+  // Helper: build a manager with a normal warm ledger, no cold start.
+  function mgrSetup(opts?: { throttleMs?: number; nowSource?: () => number }) {
+    const rec = recordingDispatcher()
+    const ledger = new MemoryNotificationLedger({ coldStart: false })
+    const mgr = new NotificationManager({
+      enabled: true,
+      dispatcher: rec.fn,
+      throttleMs: opts?.throttleMs ?? 30_000,
+      now: opts?.nowSource ?? (() => 1000),
+      ledger,
+    })
+    return { mgr, rec, ledger }
+  }
+
+  it('fires on a transition INTO needs-input', () => {
+    const { mgr, rec } = mgrSetup()
     mgr.observe([row({ state: 'working' })])
     const fired = mgr.observe([row({ state: 'needs-input', summary: 'help me' })])
     expect(fired).toHaveLength(1)
@@ -61,12 +229,7 @@ describe('NotificationManager', () => {
   })
 
   it('does not fire when a blocked session stays blocked', () => {
-    const rec = recordingDispatcher()
-    const mgr = new NotificationManager({
-      enabled: true,
-      dispatcher: rec.fn,
-      now: () => 1000,
-    })
+    const { mgr, rec } = mgrSetup()
     mgr.observe([row({ state: 'working' })])
     mgr.observe([row({ state: 'needs-input' })])
     rec.fired.length = 0
@@ -76,14 +239,8 @@ describe('NotificationManager', () => {
   })
 
   it('fires again on a fresh needs-input transition after unblocking, respecting throttle', () => {
-    const rec = recordingDispatcher()
     let now = 1000
-    const mgr = new NotificationManager({
-      enabled: true,
-      dispatcher: rec.fn,
-      throttleMs: 30_000,
-      now: () => now,
-    })
+    const { mgr } = mgrSetup({ throttleMs: 30_000, nowSource: () => now })
     mgr.observe([row({ state: 'working' })])
     now = 2000
     mgr.observe([row({ state: 'needs-input' })])
@@ -102,12 +259,7 @@ describe('NotificationManager', () => {
   })
 
   it('handles multiple sessions independently', () => {
-    const rec = recordingDispatcher()
-    const mgr = new NotificationManager({
-      enabled: true,
-      dispatcher: rec.fn,
-      now: () => 1000,
-    })
+    const { mgr } = mgrSetup()
     mgr.observe([
       row({ sessionId: 'a', state: 'working' }),
       row({ sessionId: 'b', state: 'working' }),
@@ -121,12 +273,7 @@ describe('NotificationManager', () => {
   })
 
   it('keys by harness + sessionId so same id across harnesses is distinct', () => {
-    const rec = recordingDispatcher()
-    const mgr = new NotificationManager({
-      enabled: true,
-      dispatcher: rec.fn,
-      now: () => 1000,
-    })
+    const { mgr } = mgrSetup()
     mgr.observe([
       row({ sessionId: 'x', harness: 'claude', state: 'working' }),
       row({ sessionId: 'x', harness: 'codex', state: 'working' }),
@@ -138,12 +285,14 @@ describe('NotificationManager', () => {
     expect(fired).toHaveLength(2)
   })
 
-  it('does nothing when disabled but still tracks state', () => {
+  it('does nothing when disabled but still tracks state + ledger observations', () => {
     const rec = recordingDispatcher()
+    const ledger = new MemoryNotificationLedger({ coldStart: false })
     const mgr = new NotificationManager({
       enabled: false,
       dispatcher: rec.fn,
       now: () => 1000,
+      ledger,
     })
     mgr.observe([row({ state: 'working' })])
     const fired = mgr.observe([row({ state: 'needs-input' })])
@@ -152,12 +301,7 @@ describe('NotificationManager', () => {
   })
 
   it('builds a sensible payload when the session has no summary', () => {
-    const rec = recordingDispatcher()
-    const mgr = new NotificationManager({
-      enabled: true,
-      dispatcher: rec.fn,
-      now: () => 1000,
-    })
+    const { mgr } = mgrSetup()
     mgr.observe([row({ state: 'working' })])
     const fired = mgr.observe([row({ state: 'needs-input', name: 'Quasar' })])
     expect(fired[0]?.title).toMatch(/needs you/)
@@ -167,11 +311,13 @@ describe('NotificationManager', () => {
 
   it('passes sound flag through to the payload', () => {
     const rec = recordingDispatcher()
+    const ledger = new MemoryNotificationLedger({ coldStart: false })
     const mgr = new NotificationManager({
       enabled: true,
       sound: true,
       dispatcher: rec.fn,
       now: () => 1000,
+      ledger,
     })
     mgr.observe([row({ state: 'working' })])
     const fired = mgr.observe([row({ state: 'needs-input' })])
